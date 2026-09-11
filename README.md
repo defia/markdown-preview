@@ -126,6 +126,26 @@ Bump `MARKETING_VERSION` and `CURRENT_PROJECT_VERSION` in `Version.xcconfig`, th
 
 Use `./scripts/rollback-release.sh` to revert the appcast pointer if a release misbehaves.
 
+## Troubleshooting
+
+### Quick Look spins forever on files inside another app's container
+
+Pressing Space in Finder on a Markdown file stored under another app's sandbox container — for example files received via WeChat, which live under `~/Library/Containers/com.tencent.xinWeChat/…` — shows an endless spinner. This is a macOS limitation, not a bug the extension can fix: Finder hosts third-party Quick Look extensions through Apple's `QLPreviewGenerationExtension`, which fails on items under `~/Library/Containers/<other-app>/` before any extension code runs (it asserts in `QLPreviewExtensionViewController.m` and the panel retries forever). Files in regular locations preview fine, and double-clicking always works.
+
+Workarounds:
+
+- Double-click the file to open it in Markdown Preview.
+- Copy or move the file out of the container.
+- In WeChat, change 设置 → 通用 → 文件管理 to a regular folder so received files land outside the container.
+
+### Running the Debug build breaks Finder Quick Look for `.md` files
+
+The Debug build uses bundle id `doc.md-preview.dev`. Opening a Markdown file with it once makes that bundle the persisted default handler for `net.daringfireball.markdown` in `com.apple.launchservices.secure.plist` — and that entry survives DerivedData cleanup. While it dangles, every Finder Space-press on a `.md` file spins for ~45s while Quick Look's "appex record" lookup dead-ends, even though `LSCopyDefaultRoleHandlerForContentType` reports the release bundle (the layers disagree). Repair with:
+
+```sh
+./scripts/fix-md-handlers.sh        # or --dry-run / --check
+```
+
 ## Contributing
 
 Pull requests are welcome. For larger changes, please open an issue first to discuss what you'd like to change.
