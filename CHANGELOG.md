@@ -1,5 +1,247 @@
 # Changelog
 
+## [Unreleased]
+
+## [0.0.58] – 2026-09-15
+
+This release keeps Finder navigation responsive in Quick Look, improves image and sidebar layout, preserves custom themes in full screen, and closes a renderer sanitization bypass.
+
+### Changed
+
+- **Custom themes now extend through the full-screen toolbar.** The toolbar, search row, and formatting row keep the selected theme color when entering full screen and restore the system appearance when switching back to Original ([#397](https://github.com/pluk-inc/markdown-preview/pull/397)).
+- **Sidebar controls remain available at narrow widths.** The sidebar stops shrinking before its pane picker would overflow, and older saved widths recover to the same usable minimum ([#401](https://github.com/pluk-inc/markdown-preview/pull/401)).
+
+### Fixed
+
+- **Quick Look no longer takes over Finder's arrow keys.** Previewing a Markdown file keeps keyboard focus with Finder, so the arrow keys continue moving between files and Space still closes the preview. Click inside the preview before using its text-selection and copy commands; the Copy button remains available without a click ([#370](https://github.com/pluk-inc/markdown-preview/pull/370), [#292](https://github.com/pluk-inc/markdown-preview/issues/292)).
+- **Images align with surrounding text and use normal paragraph spacing.** Read and edit modes now agree on ordinary image alignment and spacing, including linked, inline, reference-style, and quoted images, while preserving explicit HTML alignment ([#401](https://github.com/pluk-inc/markdown-preview/pull/401)).
+- **Top-level controls and media keep their natural width.** Inline elements left behind when unsafe containers are removed no longer stretch across the reading column ([#389](https://github.com/pluk-inc/markdown-preview/pull/389)).
+
+### Security
+
+- **Markdown cannot escape the renderer's inert article template with mixed-case HTML.** Template end tags are now escaped case-insensitively before sanitization, preventing content after a crafted tag from reaching the live document ([#398](https://github.com/pluk-inc/markdown-preview/pull/398), [GHSA-42qg-98g7-78q4](https://github.com/pluk-inc/markdown-preview/security/advisories/GHSA-42qg-98g7-78q4)).
+
+### Contributors
+
+- [@inquinity](https://github.com/inquinity) — Quick Look keyboard navigation, natural-width inline elements, and the renderer sanitization fix ([#370](https://github.com/pluk-inc/markdown-preview/pull/370), [#389](https://github.com/pluk-inc/markdown-preview/pull/389), [#398](https://github.com/pluk-inc/markdown-preview/pull/398)).
+- [@cxen](https://github.com/cxen) — reported Quick Look interfering with Finder navigation ([#292](https://github.com/pluk-inc/markdown-preview/issues/292)).
+
+## [0.0.57] – 2026-09-14
+
+This release improves reading and editing layout, adds Obsidian highlights and MDX file support, and makes navigation and copying Markdown more convenient.
+
+### Added
+
+- **Obsidian-style highlights.** Render `==highlighted text==` in previews and edit mode, with a matching formatting command ([#340](https://github.com/pluk-inc/markdown-preview/pull/340)).
+- **Open MDX files as Markdown.** `.mdx` files are recognized by the app, Quick Look, file navigator, and local document links. JSX is not compiled or executed ([#384](https://github.com/pluk-inc/markdown-preview/pull/384)).
+- **Bare web addresses are clickable.** HTTP and HTTPS URLs become links in the app and Quick Look, including inside lists and tables ([#392](https://github.com/pluk-inc/markdown-preview/pull/392)).
+
+### Changed
+
+- **A more consistent reading and editing layout.** Headings share a system-based type scale, colors follow system appearance and contrast settings, and lists, quotations, tables, and code blocks have refined spacing. Tables respect column alignment and lists support right-to-left indentation ([#375](https://github.com/pluk-inc/markdown-preview/pull/375), [#376](https://github.com/pluk-inc/markdown-preview/pull/376)).
+- **Code is highlighted on the first rendered frame.** Syntax colors are prepared while generating the preview ([#376](https://github.com/pluk-inc/markdown-preview/pull/376)).
+- **Copy complete blocks as Markdown.** Copying whole blocks preserves list markers, link destinations, and code fences; selections within a single block remain plain text. Selection highlighting follows the text without filling gaps between blocks ([#376](https://github.com/pluk-inc/markdown-preview/pull/376)).
+- **Simpler sidebar controls.** Switch between the table of contents and project navigator with a pane picker, and show or hide the sidebar with the system toggle ([#373](https://github.com/pluk-inc/markdown-preview/pull/373)).
+- **Click folder rows to expand or collapse them.** The project navigator now responds to clicks on folder names and icons as well as disclosure triangles ([#393](https://github.com/pluk-inc/markdown-preview/pull/393)).
+
+### Fixed
+
+- **Bullet markers keep their spacing.** Unordered lists retain the gap between markers and text in preview and edit mode, including after expanding a details section ([#386](https://github.com/pluk-inc/markdown-preview/pull/386)).
+- **Mermaid diagrams stay visible with the updated reading layout.** Diagram containers keep their size, with wide diagrams filling the column and tall diagrams centered within the height limit ([#388](https://github.com/pluk-inc/markdown-preview/pull/388)).
+
+### Contributors
+
+- [@NicolasDangg](https://github.com/NicolasDangg) — Obsidian highlight support ([#340](https://github.com/pluk-inc/markdown-preview/pull/340)).
+- [@nexmoe](https://github.com/nexmoe) — MDX file support ([#384](https://github.com/pluk-inc/markdown-preview/pull/384)).
+- [@detunized](https://github.com/detunized) — bullet marker spacing ([#386](https://github.com/pluk-inc/markdown-preview/pull/386)).
+- [@inquinity](https://github.com/inquinity) — reported and fixed disappearing Mermaid diagrams ([#387](https://github.com/pluk-inc/markdown-preview/issues/387), [#388](https://github.com/pluk-inc/markdown-preview/pull/388)).
+- [@Kijomimi](https://github.com/Kijomimi) — reported bullet spacing after expanding details ([#385](https://github.com/pluk-inc/markdown-preview/issues/385)).
+- [@todbot](https://github.com/todbot) — reported unlinked bare URLs ([#390](https://github.com/pluk-inc/markdown-preview/issues/390)).
+- [@zjy365](https://github.com/zjy365) — requested folder-row expansion ([#382](https://github.com/pluk-inc/markdown-preview/issues/382)).
+
+## [0.0.56] – 2026-09-08
+
+A small follow-up to 0.0.55 that fixes the frosted strip behind the search and formatting rows on macOS 26.1 and later, and keeps those rows consistent with the toolbar in full screen on macOS 27.
+
+### Fixed
+
+- **Search and formatting rows no longer leave a stale frosted band on macOS 26.1 and later.** The frosted strip above the page was sized from the safe area, which updates one layout pass late. The page showed through a freshly opened search bar, and the band stayed at the old height after dismissing search or leaving edit mode, in windows and in full screen. The strip is now measured from the rows themselves ([#371](https://github.com/pluk-inc/markdown-preview/pull/371)).
+- **Full-screen search and formatting rows match the toolbar on macOS 27.** Both rows use the native titlebar material in full screen, as they already did on macOS 26, instead of frosting the page beneath an opaque toolbar ([#371](https://github.com/pluk-inc/markdown-preview/pull/371)).
+
+## [0.0.55] – 2026-09-07
+
+This release brings together the improvements introduced in 0.0.54 with new full-screen fixes on macOS 26 and a simpler application menu. It improves macOS 15 Sequoia UI handling, theme handling on macOS 26 and later, and macOS 27 support, alongside toolbar fixes, minor UI tweaks, and more control over document navigation and reader margins.
+
+### Added
+
+- **Open Markdown links in separate windows.** An optional General setting opens local Markdown links in new windows while preserving heading destinations, including when the destination is already open ([#355](https://github.com/pluk-inc/markdown-preview/pull/355)).
+- **Highlight outline sections under the pointer.** An optional General setting follows the section under the pointer and retains the last pointed-at section when the pointer leaves the document ([#358](https://github.com/pluk-inc/markdown-preview/pull/358)).
+
+### Changed
+
+- **A simpler application menu.** Settings, Check for Updates, and Install CLI are grouped beneath About with fewer separators. Crash reporting is configured in Settings → Privacy, replacing the duplicate menu toggle ([#365](https://github.com/pluk-inc/markdown-preview/pull/365)).
+- **Reader margins can be tighter.** Customize Theme now lets you reduce the default horizontal page padding all the way to zero ([#354](https://github.com/pluk-inc/markdown-preview/pull/354)).
+- **Duplicate filenames are easier to distinguish.** The Window menu adds the shortest distinguishing parent-folder suffix when multiple documents share a name ([#356](https://github.com/pluk-inc/markdown-preview/pull/356)).
+
+### Fixed
+
+- **Consistent search and formatting backgrounds in full screen on macOS 26.** Both rows use native titlebar material that follows window activation and appearance, fixing transparent search backgrounds in preview mode and restoring the windowed appearance when leaving full screen ([#364](https://github.com/pluk-inc/markdown-preview/pull/364)).
+- **Markdown links have working context-menu actions.** Open Link, Open Link in New Window, and Copy Link resolve relative file paths and preserve heading fragments, including links inside tables ([#357](https://github.com/pluk-inc/markdown-preview/pull/357)).
+- **Improved UI handling on macOS 15 Sequoia.** Search and formatting rows use native materials and leave document content visible, with clearer search selections, improved formatting-button hover states, and corrected toolbar and tab spacing ([#362](https://github.com/pluk-inc/markdown-preview/pull/362)).
+- **Better theme handling on macOS 26 and later.** Themed windows retain their toolbar backgrounds, with search and formatting rows adapted to each macOS version. Selecting Original clears saved theme color overrides so the default appearance is restored ([#362](https://github.com/pluk-inc/markdown-preview/pull/362), [#344](https://github.com/pluk-inc/markdown-preview/issues/344)).
+- **Better macOS 27 support.** Toolbar backgrounds retain the native scroll-edge appearance, editor scrolling works with the page scroller, and search and formatting rows keep a separator when both are visible ([#362](https://github.com/pluk-inc/markdown-preview/pull/362)).
+
+### Contributors
+
+- [@t9mike](https://github.com/t9mike) — suggested the navigation, margin, and outline improvements ([#291](https://github.com/pluk-inc/markdown-preview/issues/291)).
+- [@aaaaalexis](https://github.com/aaaaalexis) — reported the missing toolbar background ([#344](https://github.com/pluk-inc/markdown-preview/issues/344)).
+
+## [0.0.54] – 2026-09-07
+
+This release improves macOS 15 Sequoia UI handling, theme handling on macOS 26 and later, and support for macOS 27. It fixes broken toolbar backgrounds and includes minor UI tweaks, alongside more control over document navigation and reader margins.
+
+### Added
+
+- **Open Markdown links in separate windows.** An optional General setting opens local Markdown links in new windows while preserving heading destinations, including when the destination is already open ([#355](https://github.com/pluk-inc/markdown-preview/pull/355)).
+- **Highlight outline sections under the pointer.** An optional General setting follows the section under the pointer and retains the last pointed-at section when the pointer leaves the document ([#358](https://github.com/pluk-inc/markdown-preview/pull/358)).
+
+### Changed
+
+- **Reader margins can be tighter.** Customize Theme now lets you reduce the default horizontal page padding all the way to zero ([#354](https://github.com/pluk-inc/markdown-preview/pull/354)).
+- **Duplicate filenames are easier to distinguish.** The Window menu adds the shortest distinguishing parent-folder suffix when multiple documents share a name ([#356](https://github.com/pluk-inc/markdown-preview/pull/356)).
+
+### Fixed
+
+- **Markdown links have working context-menu actions.** Open Link, Open Link in New Window, and Copy Link resolve relative file paths and preserve heading fragments, including links inside tables ([#357](https://github.com/pluk-inc/markdown-preview/pull/357)).
+- **Improved UI handling on macOS 15 Sequoia.** Search and formatting rows use native materials and leave document content visible, with clearer search selections, improved formatting-button hover states, and corrected toolbar and tab spacing ([#362](https://github.com/pluk-inc/markdown-preview/pull/362)).
+- **Better theme handling on macOS 26 and later.** Themed windows retain their toolbar backgrounds, with search and formatting rows adapted to each macOS version. Selecting Original clears saved theme color overrides so the default appearance is restored ([#362](https://github.com/pluk-inc/markdown-preview/pull/362), [#344](https://github.com/pluk-inc/markdown-preview/issues/344)).
+
+- **Better macOS 27 support.** Toolbar backgrounds retain the native scroll-edge appearance, editor scrolling works with the page scroller, and search and formatting rows keep a separator when both are visible ([#362](https://github.com/pluk-inc/markdown-preview/pull/362)).
+
+### Contributors
+
+- [@t9mike](https://github.com/t9mike) — suggested the navigation, margin, outline, and project-link improvements ([#291](https://github.com/pluk-inc/markdown-preview/issues/291)).
+- [@aaaaalexis](https://github.com/aaaaalexis) — reported the missing toolbar background ([#344](https://github.com/pluk-inc/markdown-preview/issues/344)).
+
+## [0.0.53] – 2026-09-06
+
+This release improves Mermaid diagram navigation and fixes Quick Look rendering, reader spacing, editor code blocks, and the document outline.
+
+### Changed
+
+- **Mermaid popups support zoom and pan.** Diagrams open in a screen-centered 16:9 window. Large diagrams fit the viewport and smaller diagrams retain their natural size. Scroll to zoom around the pointer, drag to pan, and press Space to restore the initial view ([#345](https://github.com/pluk-inc/markdown-preview/pull/345)).
+- **Editor code-block language labels have their own header row.** The muted, editable label leaves the full content width available for code ([#347](https://github.com/pluk-inc/markdown-preview/pull/347)).
+
+### Fixed
+
+- **Mermaid diagrams render in Quick Look again.** Copy-button spacing no longer corrupts the diagram renderer's scripts ([#343](https://github.com/pluk-inc/markdown-preview/pull/343), [#338](https://github.com/pluk-inc/markdown-preview/issues/338)).
+- **Quick Look uses balanced side margins.** The floating Copy button no longer reserves an empty strip along the entire right edge of the document ([#346](https://github.com/pluk-inc/markdown-preview/pull/346)).
+- **The reader stays below the toolbar on macOS 15.** Windows use native titlebar chrome, and the preview follows the toolbar and tab-bar boundary ([#329](https://github.com/pluk-inc/markdown-preview/pull/329)).
+- **Showing tabs preserves the reader's top spacing.** The document updates immediately when the tab bar appears or disappears ([#348](https://github.com/pluk-inc/markdown-preview/pull/348)).
+- **Single-line editor code blocks keep all four rounded corners.** Blocks at the start of a document also retain their top padding ([#347](https://github.com/pluk-inc/markdown-preview/pull/347)).
+- **Code blocks inside lists no longer break the outline.** Real headings remain visible, and heading-like text inside fenced code stays out of the table of contents ([#349](https://github.com/pluk-inc/markdown-preview/pull/349), [#336](https://github.com/pluk-inc/markdown-preview/issues/336)).
+- **Mermaid popup zoom stays anchored to the pointer on both axes** ([#345](https://github.com/pluk-inc/markdown-preview/pull/345)).
+
+### Contributors
+
+- [@cybito](https://github.com/cybito) — Mermaid popup navigation ([#345](https://github.com/pluk-inc/markdown-preview/pull/345)).
+- [@inquinity](https://github.com/inquinity) — reported and fixed Mermaid rendering in Quick Look ([#343](https://github.com/pluk-inc/markdown-preview/pull/343), [#338](https://github.com/pluk-inc/markdown-preview/issues/338)).
+- [@kud](https://github.com/kud) — native titlebar and reader layout on macOS 15 ([#329](https://github.com/pluk-inc/markdown-preview/pull/329)).
+- [@carlosypunto](https://github.com/carlosypunto) — contributor guidance for signing and secrets ([#342](https://github.com/pluk-inc/markdown-preview/pull/342)).
+- [@wyttime04](https://github.com/wyttime04) — reported the outline parsing bug ([#336](https://github.com/pluk-inc/markdown-preview/issues/336)).
+
+## [0.0.52] – 2026-09-01
+
+This release rebuilds the reading experience around a single "aA" control in the toolbar: a theme is now a complete reading look — page color, ink, reading face, and body weight — and a new Customize Theme sheet carries the fonts and the spacing controls. The toolbar is also a native window-drag surface again, editing gains pasted images and a native New Document flow, and a long list of layout and rendering faults are fixed.
+
+### Added
+
+- **A Themes & Settings popover in the toolbar.** The "aA" toolbar item holds the text-size pair with a dot scale, an Appearance button that cycles Automatic → Light → Dark, and a 3 × 3 gallery of nine themes — Original, Quiet, Paper, Bold, Calm, Focus, Graphite, Dusk, and Midnight — each card drawn in its own page color, ink, and reading face ([#333](https://github.com/pluk-inc/markdown-preview/pull/333)).
+- **A Customize Theme sheet sets the reading font and the layout.** The sheet offers 12 reading faces, each name set in the face it applies, a Bold Text switch, and — behind a Customize gate — Line Spacing, Character Spacing, Word Spacing, and Margins, with a live preview and per-surface color wells. Quick Look reads with the same layout. Reset Theme restores the applied theme's colors, face, and weight ([#333](https://github.com/pluk-inc/markdown-preview/pull/333)).
+- **Images can be pasted into the editor.** A pasted image is written as a PNG into a `<document-name>-pictures` folder beside the Markdown file, numbered from `1.png`, and inserted as a relative Markdown link. The image renders in both preview and edit mode, and a click on it opens a rename sheet that moves the file and rewrites the Markdown destination ([#307](https://github.com/pluk-inc/markdown-preview/pull/307)).
+- **A native New Document action.** Markdown documents are declared with the Editor role, so File ▸ New Document and the New Document button in the launch panel create an untitled document that opens directly in edit mode. The first save uses the native save panel ([#320](https://github.com/pluk-inc/markdown-preview/pull/320)).
+
+### Changed
+
+- **The toolbar is built from AppKit-owned items.** The sidebar pull-down, the back and forward pair, and the Inspector, Edit, and Always on Top toggles are now native toolbar items instead of custom control views. They keep the single glass pill and stay individually movable in Customize Toolbar ([#319](https://github.com/pluk-inc/markdown-preview/pull/319), [#330](https://github.com/pluk-inc/markdown-preview/pull/330)).
+- **The formatting bar and the find bar sit below the tab bar.** Both bars are content overlays now, so the tab bar no longer moves when edit mode is toggled or find is opened. The order reads tab bar → find bar → formatting bar → document, and the bars tuck into the tab bar's bottom margin so the rows read as one block ([#331](https://github.com/pluk-inc/markdown-preview/pull/331)).
+- **The Appearance pane in Settings uses the same theme cards as the popover.** Removing the toolbar item never takes away access to themes ([#333](https://github.com/pluk-inc/markdown-preview/pull/333)).
+
+### Fixed
+
+- **The toolbar moves the window again.** Only two small gaps responded to a drag before. With the transparent titlebar, macOS 26 also re-dispatched clicks in the toolbar padding into the web view, which consumed them; the web views now decline those clicks so the native drag starts ([#319](https://github.com/pluk-inc/markdown-preview/pull/319), [#330](https://github.com/pluk-inc/markdown-preview/pull/330), [#317](https://github.com/pluk-inc/markdown-preview/issues/317)).
+- **The Copy button on a code block works in Quick Look.** The Finder preview now writes the block text to the pasteboard through a dedicated handler, with `document.execCommand('copy')` as a last resort, instead of failing without a message inside the extension sandbox ([#327](https://github.com/pluk-inc/markdown-preview/pull/327)).
+- **Renaming a pasted image no longer loses the change.** The inserted Markdown is saved before a rename starts, rename waits for a save that is in flight, and the editor replacement stays out of the undo history so Undo cannot restore an old image path. Reload from Disk restores the image and synchronizes the editor, draft, baseline, and dirty state ([#325](https://github.com/pluk-inc/markdown-preview/pull/325)).
+- **Escaped square brackets in a link no longer turn into display math.** Brackets inside a valid Markdown link are preserved before the math pass, so `[4]` renders as a link while adjacent `x^2` still renders as math ([#323](https://github.com/pluk-inc/markdown-preview/pull/323), [#322](https://github.com/pluk-inc/markdown-preview/issues/322)).
+- **The empty area left of a centered document scrolls.** Wheel gestures over the native gutter reach the document, and the toolbar backing color continues across the gutter, so the seam at the leading edge of the text is gone ([#321](https://github.com/pluk-inc/markdown-preview/pull/321)).
+- **The edit and find bars no longer crowd the tabs in full screen.** Full screen draws the tab bar with a thinner bottom margin, so the overlap is now 2 pt there and 6 pt in a normal window ([#332](https://github.com/pluk-inc/markdown-preview/pull/332)).
+- **A scrolled image no longer leaves a blur in the titlebar.** The preview web view is hidden after the crossfade into edit mode, so AppKit stops sampling it for the titlebar material ([#307](https://github.com/pluk-inc/markdown-preview/pull/307)).
+
+### Contributors
+
+Thank you to the people outside the project who shipped code or reported a fault in this release:
+
+- [@kud](https://github.com/kud) — made the toolbar a window-drag surface again, and reported the fault ([#319](https://github.com/pluk-inc/markdown-preview/pull/319), [#317](https://github.com/pluk-inc/markdown-preview/issues/317))
+- [@wzz6423](https://github.com/wzz6423) — pasted image support and the image rename fixes ([#307](https://github.com/pluk-inc/markdown-preview/pull/307), [#325](https://github.com/pluk-inc/markdown-preview/pull/325))
+- [@juanmaramos](https://github.com/juanmaramos) — the native New Document flow ([#320](https://github.com/pluk-inc/markdown-preview/pull/320))
+- [@eichiiiwastaken](https://github.com/eichiiiwastaken) — centered preview gutter scrolling and the toolbar seam ([#321](https://github.com/pluk-inc/markdown-preview/pull/321))
+- [@qisthidev](https://github.com/qisthidev) — the code-block Copy button in Quick Look ([#327](https://github.com/pluk-inc/markdown-preview/pull/327))
+- [@dimiboi](https://github.com/dimiboi) — reported the escaped brackets rendering as display math ([#322](https://github.com/pluk-inc/markdown-preview/issues/322))
+
+## [0.0.51] – 2026-08-25
+
+This release lets you color the whole application with themes, and it lets a link in a browser or another application open a Markdown file directly.
+
+### Added
+
+- **Theme colors change the look of the whole window.** Settings ▸ Appearance offers six built-in presets — Red Graphite, Dark Graphite, High Contrast, Charcoal, Solarized Light, and Solarized Dark — and separate color wells for the window background, the code block background, the text, and the links. A theme reaches the page, the toolbar, the sidebar, edit mode, and full screen, in both light and dark appearance ([#294](https://github.com/pluk-inc/markdown-preview/pull/294)).
+- **A `md-preview://` link opens a file from a browser.** A link in the shape `md-preview://file/<absolute path>` opens the file in the application, like `cursor://file/…` does for Cursor. A folder path opens through the normal folder flow, and a malformed link shows an alert that explains the expected shape ([#312](https://github.com/pluk-inc/markdown-preview/pull/312), [#304](https://github.com/pluk-inc/markdown-preview/issues/304)).
+
+### Changed
+
+- **The Appearance pane in Settings replaces the Theme pane.** The Automatic, Light, and Dark picker moved there from the General pane, and the Settings window always opens on the General pane ([#294](https://github.com/pluk-inc/markdown-preview/pull/294)).
+- **The tab bar no longer shows a "+" button.** File ▸ New Tab and ⌘T still create a tab ([#294](https://github.com/pluk-inc/markdown-preview/pull/294)).
+
+### Contributors
+
+Thank you to the reporter who helped shape this release:
+
+- [@federicolarumbe](https://github.com/federicolarumbe) — requested the URL scheme that opens a file from a browser ([#304](https://github.com/pluk-inc/markdown-preview/issues/304))
+
+## [0.0.50] – 2026-08-25
+
+This release gives you more control over how Markdown Preview opens, displays, and saves documents. Editing gains automatic saving, bracket pairing, and a more capable fenced-code experience, while several window and navigation problems are fixed.
+
+### Added
+
+- **The inspector shows where a document is stored.** The Document pane now includes a selectable Where row beneath the file name. Paths inside your home folder use `~`, and the complete path appears when you hold the pointer over the row ([#277](https://github.com/pluk-inc/markdown-preview/pull/277)).
+- **Rendered Markdown can use a different font.** Settings ▸ General now offers System, Serif, Rounded, and Monospace choices. Open documents update immediately, and the same choice applies to Finder previews ([#302](https://github.com/pluk-inc/markdown-preview/pull/302)).
+- **Documents can open as tabs by default.** Enable Open documents in tabs under Settings ▸ General ▸ Windows to place files opened from Finder, File ▸ Open…, or Open Recent into the front window. The existing behaviour remains the default, and Open in New Window still opens a separate window ([#303](https://github.com/pluk-inc/markdown-preview/pull/303), [#230](https://github.com/pluk-inc/markdown-preview/issues/230)).
+- **Edited documents can save automatically.** Settings ▸ General includes automatic-saving choices from 30 seconds to 60 minutes. It is off by default and runs only for file-backed documents with unsaved changes. Automatic saving uses the existing external-change protection and reports its status in the window subtitle ([#305](https://github.com/pluk-inc/markdown-preview/pull/305)).
+- **The editor pairs brackets automatically.** Typing an opening bracket, parenthesis, brace, quote, or backtick inserts its matching character and leaves the insertion point between the pair. Backspace removes an unused pair together ([#306](https://github.com/pluk-inc/markdown-preview/pull/306)).
+- **Anonymous active-install counts can be shared with the project.** Release builds send at most one event per installation per UTC day so the project can measure daily and monthly active installations. The event contains a random installation identifier and coarse compatibility information, but no document content, file names, paths, actions, screens, precise location, personal information, advertising identifiers, or person profile. You can disable it under Settings ▸ Privacy ([#309](https://github.com/pluk-inc/markdown-preview/pull/309)).
+
+### Changed
+
+- **Always on Top is now an application-wide preference.** Turning it on affects every open and future preview window, persists across launches, and stays synchronized between the toolbar, View menu, and Settings ▸ General ▸ Windows ([#301](https://github.com/pluk-inc/markdown-preview/pull/301)).
+- **Fenced code blocks are easier to edit.** Tab inserts indentation inside code without changing fence lines, unlabelled blocks can detect and highlight common languages without modifying the source, and an explicit language field lets you add or change the authored language. Typing an opening fence also creates its matching closing fence ([#308](https://github.com/pluk-inc/markdown-preview/pull/308)).
+
+### Fixed
+
+- **The Files sidebar changes selection without flickering.** Its highlight now stays on the current file until the requested document finishes loading, then moves once to the new file ([#296](https://github.com/pluk-inc/markdown-preview/pull/296), [#295](https://github.com/pluk-inc/markdown-preview/issues/295)).
+- **A file reopens after its window has been closed.** Opening the same file again from Finder, Open With, or the command-line tool now creates a new window even when its document remained loaded in the running application ([#299](https://github.com/pluk-inc/markdown-preview/pull/299), [#297](https://github.com/pluk-inc/markdown-preview/issues/297)).
+
+### Contributors
+
+Thank you to the external contributors and reporter who helped improve this release:
+
+- [@caic99](https://github.com/caic99) — added the document location to the inspector ([#277](https://github.com/pluk-inc/markdown-preview/pull/277))
+- [@zjy365](https://github.com/zjy365) — reported and fixed the Files sidebar selection flicker ([#296](https://github.com/pluk-inc/markdown-preview/pull/296), [#295](https://github.com/pluk-inc/markdown-preview/issues/295))
+- [@bosir](https://github.com/bosir) — reported and fixed reopening files whose windows were closed ([#299](https://github.com/pluk-inc/markdown-preview/pull/299), [#297](https://github.com/pluk-inc/markdown-preview/issues/297))
+- [@kud](https://github.com/kud) — made Always on Top persistent, added the rendered-document font choices, and added the tab-opening preference ([#301](https://github.com/pluk-inc/markdown-preview/pull/301), [#302](https://github.com/pluk-inc/markdown-preview/pull/302), [#303](https://github.com/pluk-inc/markdown-preview/pull/303))
+- [@wzz6423](https://github.com/wzz6423) — added automatic saving and bracket pairing, and improved fenced-code editing ([#305](https://github.com/pluk-inc/markdown-preview/pull/305), [#306](https://github.com/pluk-inc/markdown-preview/pull/306), [#308](https://github.com/pluk-inc/markdown-preview/pull/308))
+- [@andrew-hill](https://github.com/andrew-hill) — requested the option to open documents in tabs ([#230](https://github.com/pluk-inc/markdown-preview/issues/230))
+
 ## [0.0.49] – 2026-08-15
 
 This release adds a Settings window that collects all the preferences of the application in one place. It also makes the keyboard commands and a new Copy button work in a Finder preview.

@@ -21,6 +21,24 @@ private final class CursorRegionMessageProxy: NSObject, WKScriptMessageHandler {
     }
 }
 
+/// Receives `copyCode` messages from the code-block Copy button. The Quick
+/// Look page has no `mdPreviewHost` bridge (that would also enable task
+/// checkbox and table editing), and `navigator.clipboard` is rejected inside
+/// the extension sandbox, so the page posts here and the extension writes to
+/// the pasteboard natively — the same path the floating Copy button uses.
+private final class CopyCodeMessageProxy: NSObject, WKScriptMessageHandler {
+    func userContentController(
+        _ userContentController: WKUserContentController,
+        didReceive message: WKScriptMessage
+    ) {
+        guard message.frameInfo.isMainFrame,
+              let text = message.body as? String else { return }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+    }
+}
+
 private final class QuickLookWebView: WKWebView {
     private struct CursorRegion {
         let rect: NSRect
@@ -28,6 +46,7 @@ private final class QuickLookWebView: WKWebView {
     }
 
     private static let cursorRegionMessageName = "mdPreviewCursorRegions"
+    static let copyCodeMessageName = "mdPreviewCopyCode"
     private static let maximumVisibleCursorRegions = 4_096
     private var cursorRegions: [CursorRegion] = []
 
@@ -36,6 +55,10 @@ private final class QuickLookWebView: WKWebView {
         configuration.userContentController.add(
             messageProxy,
             name: Self.cursorRegionMessageName
+        )
+        configuration.userContentController.add(
+            CopyCodeMessageProxy(),
+            name: Self.copyCodeMessageName
         )
         configuration.userContentController.addUserScript(WKUserScript(
             source: Self.cursorRegionReportingScript,
@@ -53,7 +76,9 @@ private final class QuickLookWebView: WKWebView {
 
     // The Quick Look host has no Edit menu, so ⌘A/⌘C never arrive as menu
     // key equivalents — claim them here and hand them to WebKit's standard
-    // responder actions, which act on the page's DOM selection.
+    // responder actions, which act on the page's DOM selection. This only
+    // runs once the preview has keyboard focus, i.e. after the user has
+    // clicked into it; see QuickLookFirstResponderPolicy.
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         if event.type == .keyDown,
            let command = QuickLookEditingCommands.command(
@@ -404,7 +429,7 @@ final class PreviewViewController: NSViewController, QLPreviewingController, WKN
     private static let floatingButtonHeight: CGFloat = 26
     private static let floatingButtonTrailingInset: CGFloat = 12
     private static let floatingButtonBottomInset: CGFloat = 10
-    private static let floatingButtonHorizontalClearance: CGFloat = 90
+    // Reserve bottom space for the overlay without narrowing the whole page.
     private static let floatingButtonVerticalClearance: CGFloat = 44
 
     private var webView: QuickLookWebView!
@@ -561,28 +586,20 @@ final class PreviewViewController: NSViewController, QLPreviewingController, WKN
 
     private func activatePreviewIfReady() {
         guard isPreviewVisible, isPreviewReady else { return }
-        copyButton.isEnabled = true
-        view.window?.makeFirstResponder(webView)
+        // Error pages have no Markdown source, so Copy stays disabled there.
+        copyButton.isEnabled = markdownSource != nil
+        // Deliberately no `makeFirstResponder(webView)` here: the Quick Look
+        // host owns keyboard navigation, and stealing focus on load breaks
+        // arrow-key file navigation. See QuickLookFirstResponderPolicy.
+        assert(QuickLookFirstResponderPolicy.claimsFirstResponderOnLoad == false)
     }
 
     private func addingCopyButtonClearance(to html: String) -> String {
-        // Vendor scripts can contain `</head>` as data. The document's real
-        // closing tag is the final occurrence in MarkdownHTML's output.
-        guard let headEnd = html.range(of: "</head>", options: .backwards) else { return html }
-        let horizontalClearance = Int(Self.floatingButtonHorizontalClearance)
-        let verticalClearance = Int(Self.floatingButtonVerticalClearance)
-        let style = """
-        <style>
-        body {
-            padding-right: calc(\(horizontalClearance)px + env(safe-area-inset-right));
-            padding-bottom: calc(\(verticalClearance)px + env(safe-area-inset-bottom));
-        }
-        </style>
-
-        """
-        var result = html
-        result.insert(contentsOf: style, at: headEnd.lowerBound)
-        return result
+        // Placement is subtle and load-bearing — see CopyButtonClearance.
+        CopyButtonClearance.applying(
+            to: html,
+            vertical: Int(Self.floatingButtonVerticalClearance)
+        )
     }
 
     func preparePreviewOfFile(at url: URL) async throws {
@@ -654,12 +671,19 @@ final class PreviewViewController: NSViewController, QLPreviewingController, WKN
         currentNavigation = webView.loadHTMLString(html, baseURL: nil)
     }
 
-    // Quick Look opens with keyboard focus in the host (Finder), so ⌘A/⌘C
-    // reach the preview only after the user clicks into it. Claiming first
-    // responder once the content loads propagates focus across the
-    // ViewBridge, making ⌘A/⌘C work immediately. The host still handles
-    // arrows (file navigation) and space (close panel) itself — verified
-    // against a focused preview.
+    // Quick Look opens with keyboard focus in the host (Finder), and it
+    // stays there: the host handles arrows (file navigation) and space
+    // (close panel), and the preview only becomes first responder once the
+    // user clicks into it — matching Apple's text and PDF previews, and
+    // keeping arrow-key file navigation working (pluk-inc/markdown-preview#292).
+    //
+    // The cost is that ⌘A/⌘C need that click first. Key events reach this
+    // extension only while its view holds focus in the host, so until the
+    // user clicks, those chords never reach the preview and copy nothing
+    // from it. Apple's text and PDF previews behave the same way.
+    // Claiming focus on load (#288) is what made them work immediately, and
+    // it is also what took the arrow keys away. The Copy button still copies
+    // the Markdown source without any click into the page.
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         guard let navigation, navigation === currentNavigation else { return }
         currentNavigation = nil

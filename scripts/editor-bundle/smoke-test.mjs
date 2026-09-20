@@ -56,12 +56,99 @@ if (editor) {
   check("round-trip is byte-faithful", editor.getMarkdown() === doc)
   const text = dom.window.document.querySelector(".cm-content")?.textContent ?? ""
   check("document text renders", text.includes("Sample Markdown Cheat Sheet"))
-  check("virtualized documents use CodeMirror selection painting",
-    dom.window.document.querySelector(".cm-cursorLayer") != null
-      && dom.window.document.querySelector(".cm-selectionLayer") != null)
+  // Native selection: no drawSelection() layers, so WebKit paints only text
+  // once the host lays .cm-content out as a flex column.
+  check("documents use the native selection, not CodeMirror's layers",
+    dom.window.document.querySelector(".cm-selectionLayer") == null
+      && dom.window.document.querySelector(".cm-cursorLayer") == null)
   editor.exec("bold")
   check("exec('bold') inserts markers", editor.getMarkdown().startsWith("****"))
 }
+
+const highlightHost = dom.window.document.createElement("div")
+dom.window.document.body.appendChild(highlightHost)
+const highlightSource = "before ==Highlighted text== after"
+const highlightEditor = dom.window.MDEditor.create(highlightHost, highlightSource, {})
+const highlightContent = highlightHost.querySelector(".cm-content")
+check("highlight syntax keeps the source unchanged",
+  highlightEditor.getMarkdown() === highlightSource)
+check("highlight syntax decorates the content",
+  highlightHost.querySelector(".cm-md-highlight") != null)
+check("inactive highlight delimiters are hidden",
+  !(highlightContent?.textContent ?? "").includes("=="))
+highlightEditor.focus()
+highlightEditor.select(highlightSource.indexOf("Highlighted") + 2)
+check("active highlight reveals its delimiters",
+  (highlightContent?.textContent ?? "").includes("==Highlighted text=="))
+
+const codeHighlightHost = dom.window.document.createElement("div")
+dom.window.document.body.appendChild(codeHighlightHost)
+const codeHighlightEditor = dom.window.MDEditor.create(
+  codeHighlightHost, "```\n==literal==\n```", {})
+check("highlight syntax stays literal inside fenced code",
+  (codeHighlightHost.querySelector(".cm-content")?.textContent ?? "").includes("==literal=="))
+
+const nestedHighlightHost = dom.window.document.createElement("div")
+dom.window.document.body.appendChild(nestedHighlightHost)
+const nestedHighlightSource = "==**bold** and *italic*=="
+const nestedHighlightEditor = dom.window.MDEditor.create(nestedHighlightHost, nestedHighlightSource, {})
+check("nested Markdown stays inside a highlight",
+  nestedHighlightHost.querySelector(".cm-md-highlight") != null
+    && nestedHighlightHost.querySelector(".cm-md-strong") != null
+    && !(nestedHighlightHost.querySelector(".cm-content")?.textContent ?? "").includes("=="))
+
+const inlineCodeHighlightHost = dom.window.document.createElement("div")
+dom.window.document.body.appendChild(inlineCodeHighlightHost)
+dom.window.MDEditor.create(inlineCodeHighlightHost, "`==code==` and ==visible==", {})
+check("inline code is excluded from highlights",
+  inlineCodeHighlightHost.querySelectorAll(".cm-md-highlight").length === 1
+    && (inlineCodeHighlightHost.querySelector(".cm-content")?.textContent ?? "").includes("==code=="))
+
+const invalidHighlightHost = dom.window.document.createElement("div")
+dom.window.document.body.appendChild(invalidHighlightHost)
+dom.window.MDEditor.create(invalidHighlightHost, "== open == and ==unclosed", {})
+check("unmatched or whitespace-delimited markers stay literal",
+  invalidHighlightHost.querySelector(".cm-md-highlight") == null
+    && (invalidHighlightHost.querySelector(".cm-content")?.textContent ?? "").includes("== open =="))
+
+const evenHighlightHost = dom.window.document.createElement("div")
+dom.window.document.body.appendChild(evenHighlightHost)
+const evenHighlightSource = "====hello===="
+dom.window.MDEditor.create(evenHighlightHost, evenHighlightSource, {})
+check("even highlight runs split into independent pairs",
+  evenHighlightHost.querySelectorAll(".cm-md-highlight").length === 2
+    && Array.from(evenHighlightHost.querySelectorAll(".cm-md-highlight"))
+      .every((element) => element.textContent === "hello"))
+
+const oddHighlightHost = dom.window.document.createElement("div")
+dom.window.document.body.appendChild(oddHighlightHost)
+const oddHighlightSource = "=====hello====="
+dom.window.MDEditor.create(oddHighlightHost, oddHighlightSource, {})
+check("odd highlight runs leave one literal equals before each pair",
+  oddHighlightHost.querySelectorAll(".cm-md-highlight").length === 2
+    && Array.from(oddHighlightHost.querySelectorAll(".cm-md-highlight"))
+      .every((element) => element.textContent === "hello=")
+    && (oddHighlightHost.querySelector(".cm-content")?.textContent ?? "")
+      === "=hello=")
+
+const linkHighlightHost = dom.window.document.createElement("div")
+dom.window.document.body.appendChild(linkHighlightHost)
+const linkHighlightSource = "[==label==](https://example.com/?a==b==c) and \\==literal\\== and ==visible=="
+dom.window.MDEditor.create(linkHighlightHost, linkHighlightSource, {})
+const linkHighlightText = Array.from(linkHighlightHost.querySelectorAll(".cm-md-highlight"))
+  .map((element) => element.textContent)
+  .join("|")
+check("links and escapes keep delimiter parsing in text context",
+  linkHighlightHost.querySelectorAll(".cm-md-highlight").length === 2
+    && linkHighlightText.includes("label")
+    && linkHighlightText.includes("visible"))
+
+const highlightCommandHost = dom.window.document.createElement("div")
+dom.window.document.body.appendChild(highlightCommandHost)
+const highlightCommandEditor = dom.window.MDEditor.create(highlightCommandHost, "text", {})
+highlightCommandEditor.select(0, 4)
+highlightCommandEditor.exec("highlight")
+check("exec('highlight') wraps the selected text", highlightCommandEditor.getMarkdown() === "==text==")
 
 const indentationHost = dom.window.document.createElement("div")
 dom.window.document.body.appendChild(indentationHost)
@@ -139,6 +226,26 @@ check("repeated Shift-Tab returns a deeply indented list item to its original de
   indentationEditor.getMarkdown() === "- Parent\n- Alpha\n- Beta")
 indentationEditor.destroy()
 
+const bracketCases = [
+  ["paragraph", "Hello", 5, "(", ")", "Hello()", "Hello(x)"],
+  ["ATX heading", "# Heading", 9, "[", "]", "# Heading[]", "# Heading[x]"],
+  ["Setext heading", "Heading\n=======", 7, "{", "}", "Heading{}\n=======", "Heading{x}\n======="],
+  ["fenced code block", "```js\ncall\n```", 10, "(", ")", "```js\ncall()\n```", "```js\ncall(x)\n```"],
+]
+for (const [label, source, cursorPos, openBracket, closeBracket, expectedText, expectedAtCursor] of bracketCases) {
+  const bracketHost = dom.window.document.createElement("div")
+  dom.window.document.body.appendChild(bracketHost)
+  const bracketEditor = dom.window.MDEditor.create(bracketHost, source, {})
+  bracketEditor.select(cursorPos)
+  bracketEditor.insert(openBracket)
+  check(`typing ${openBracket} in ${label} auto-closes with ${closeBracket}`,
+    bracketEditor.getMarkdown() === expectedText)
+  bracketEditor.insert("x")
+  check(`cursor lands between ${openBracket}${closeBracket} in ${label}`,
+    bracketEditor.getMarkdown() === expectedAtCursor)
+  bracketEditor.destroy()
+}
+
 const inlineTabHost = dom.window.document.createElement("div")
 dom.window.document.body.appendChild(inlineTabHost)
 const inlineTabEditor = dom.window.MDEditor.create(
@@ -165,6 +272,24 @@ inlineTabContent?.dispatchEvent(new dom.window.KeyboardEvent("keydown", {
 check("Tab at a paragraph's leading edge preserves its Markdown block type",
   inlineTabEditor.getMarkdown() === "Plain\t paragraph")
 inlineTabEditor.destroy()
+
+const fencedTabHost = dom.window.document.createElement("div")
+dom.window.document.body.appendChild(fencedTabHost)
+const fencedTabEditor = dom.window.MDEditor.create(
+  fencedTabHost, "intro\n```c\nint main() {\nreturn 0;\n}\n```", {})
+const fencedTabContent = fencedTabHost.querySelector(".cm-content")
+fencedTabEditor.select(fencedTabEditor.getMarkdown().indexOf("return"))
+const fencedTabEvent = new dom.window.KeyboardEvent("keydown", {
+  key: "Tab",
+  code: "Tab",
+  bubbles: true,
+  cancelable: true,
+})
+fencedTabContent?.dispatchEvent(fencedTabEvent)
+check("Tab indents from the leading edge of fenced code content",
+  fencedTabEvent.defaultPrevented
+    && fencedTabEditor.getMarkdown().includes("\n\treturn 0;"))
+fencedTabEditor.destroy()
 
 const topLevelBlockCases = [
   ["ATX heading", "# Heading"],
@@ -324,10 +449,12 @@ const headingFollowHost = dom.window.document.createElement("div")
 dom.window.document.body.appendChild(headingFollowHost)
 const headingFollowEditor = dom.window.MDEditor.create(
   headingFollowHost, "## Heading\n\nFollowing paragraph", {})
-check("separator after heading includes the blank line and paragraph margin",
+// The final blank of a run shrinks to blankGap plus the next block's margin
+// (headless defaults: 4 + 12).
+check("separator after heading is the blank gap plus the paragraph margin",
   Math.abs(
     parseFloat(headingFollowHost.querySelector(".cm-md-block-separator")?.style.height)
-      - 34.8
+      - 16
   ) < 0.01)
 headingFollowEditor.destroy()
 
@@ -335,10 +462,41 @@ const paragraphGapHost = dom.window.document.createElement("div")
 dom.window.document.body.appendChild(paragraphGapHost)
 const paragraphGapEditor = dom.window.MDEditor.create(
   paragraphGapHost, "First paragraph.\n\nSecond paragraph.\n\n\nThird paragraph.", {})
-check("blank paragraph separators retain line height plus semantic margin",
+check("blank paragraph separators are the blank gap plus the paragraph margin",
   Array.from(paragraphGapHost.querySelectorAll(".cm-md-block-separator"))
-    .every((line) => Math.abs(parseFloat(line.style.height) - 34.8) < 0.01))
+    .every((line) => Math.abs(parseFloat(line.style.height) - 16) < 0.01))
 paragraphGapEditor.destroy()
+
+// A block right under a heading (no blank line) gets the preview's margin as
+// bottom padding on the heading line.
+const adjacentHost = dom.window.document.createElement("div")
+dom.window.document.body.appendChild(adjacentHost)
+const adjacentEditor = dom.window.MDEditor.create(
+  adjacentHost, "## Heading\nParagraph right under it", {})
+check("adjacent block adds the paragraph margin below the heading line",
+  adjacentHost.querySelector(".cm-md-block-gap")?.style.paddingBottom === "12px")
+adjacentEditor.destroy()
+
+// Ordered markers share the bullet's hanging box; continuation lines drop the
+// hanging indent; nested quotations carry their depth.
+const structureHost = dom.window.document.createElement("div")
+dom.window.document.body.appendChild(structureHost)
+const structureEditor = dom.window.MDEditor.create(
+  structureHost,
+  "1. First\n2. Second\n\n- Item\n\n  Continuation line\n\n> outer\n>> inner",
+  {})
+const orderedMarkers = Array.from(structureHost.querySelectorAll(".cm-md-ordered"))
+check("inactive ordered markers render in the hanging marker box",
+  orderedMarkers.map((el) => el.textContent).join("|") === "1.|2.")
+check("continuation line inside a list item drops the hanging indent",
+  structureHost.querySelector(".cm-md-list-continuation")?.textContent.includes("Continuation line") === true)
+const quoteLines = Array.from(structureHost.querySelectorAll(".cm-md-quote"))
+check("nested quotation lines carry one rule per depth",
+  quoteLines.length === 2
+    && quoteLines[0].style.paddingInlineStart === "1.5em"
+    && quoteLines[1].style.paddingInlineStart === "3em"
+    && quoteLines[1].style.backgroundImage.split("linear-gradient").length === 3)
+structureEditor.destroy()
 
 const inlineCodeHost = dom.window.document.createElement("div")
 dom.window.document.body.appendChild(inlineCodeHost)
@@ -350,6 +508,90 @@ check("inline code renders as one styled content span",
 check("inactive inline code hides both backtick markers",
   inlineCodeHost.querySelector(".cm-content")?.textContent === "before highlight after")
 inlineCodeEditor.destroy()
+
+const imageHost = dom.window.document.createElement("div")
+dom.window.document.body.appendChild(imageHost)
+const imageMarkdown = "Before\n\n![Preview](md-asset:///test-pictures/1.png)\n\nAfter"
+let requestedImageRename = null
+dom.window.__mdRequestImageRename = (source) => { requestedImageRename = source }
+const imageEditor = dom.window.MDEditor.create(imageHost, imageMarkdown, {})
+const imagePreview = imageHost.querySelector(".cm-md-image-preview")
+const image = imagePreview?.querySelector("img")
+const imageSource = imagePreview?.querySelector(".cm-md-image-source")
+check("inactive Markdown image renders as a preview",
+  image?.getAttribute("src") === "md-asset:///test-pictures/1.png")
+check("standalone image uses a line without extra baseline spacing",
+  imagePreview?.closest(".cm-line")?.classList.contains("cm-md-image-line"))
+check("image preview retains the exact Markdown source",
+  imageSource?.textContent === "![Preview](md-asset:///test-pictures/1.png)")
+image?.dispatchEvent(new dom.window.MouseEvent("click", {
+  bubbles: true,
+  cancelable: true,
+}))
+check("clicking a local image requests its native rename flow",
+  requestedImageRename === "md-asset:///test-pictures/1.png")
+imageSource?.dispatchEvent(new dom.window.MouseEvent("mousedown", {
+  bubbles: true,
+  cancelable: true,
+}))
+check("clicking image source restores editable Markdown without changing it",
+  imageHost.querySelector(".cm-md-image-preview") == null
+    && imageHost.querySelector(".cm-md-image-line") == null
+    && imageEditor.getMarkdown() === imageMarkdown)
+imageEditor.destroy()
+delete dom.window.__mdRequestImageRename
+
+const inlineImageHost = dom.window.document.createElement("div")
+dom.window.document.body.appendChild(inlineImageHost)
+const inlineImageMarkdown = "Before ![Preview](image.png) after"
+const inlineImageEditor = dom.window.MDEditor.create(inlineImageHost, inlineImageMarkdown, {})
+check("an image surrounded by text keeps its inline alignment",
+  inlineImageHost.querySelector(".cm-md-image-preview") != null
+    && inlineImageHost.querySelector(".cm-md-image-line") == null
+    && inlineImageEditor.getMarkdown() === inlineImageMarkdown)
+inlineImageEditor.destroy()
+
+for (const imageSource of [
+  "![Preview](image.png)",
+  "[![Preview](image.png)](https://example.com)",
+  "Before ![Preview](image.png) after",
+  "![Preview][reference]\n\n[reference]: image.png",
+  "![Preview](//example.com/image.png)",
+  "> ![Preview](image.png)",
+]) {
+  const host = dom.window.document.createElement("div")
+  dom.window.document.body.appendChild(host)
+  const source = `Before\n\n${imageSource}\n\nAfter image\n\nFinal paragraph`
+  const instance = dom.window.MDEditor.create(host, source, {})
+  const lines = Array.from(host.querySelectorAll(".cm-line"))
+  for (const text of ["After image", "Final paragraph"]) {
+    const line = lines.find((line) => line.textContent === text)
+    check(`paragraph spacing survives ${imageSource.split("\n")[0]} before ${text}`,
+      parseFloat(line?.previousElementSibling?.style.height) === 16)
+  }
+  instance.destroy()
+}
+
+const renameHistoryHost = dom.window.document.createElement("div")
+dom.window.document.body.appendChild(renameHistoryHost)
+const renameHistoryEditor = dom.window.MDEditor.create(
+  renameHistoryHost, "![Preview](test-pictures/1.png)", {})
+renameHistoryEditor.replaceMarkdown("![Preview](test-pictures/hero.png)")
+const renameHistoryContent = renameHistoryHost.querySelector(".cm-content")
+renameHistoryContent?.focus()
+// jsdom reports a non-macOS platform, so Mod maps to Ctrl in this test.
+const renameUndoEvent = new dom.window.KeyboardEvent("keydown", {
+  key: "z",
+  code: "KeyZ",
+  ctrlKey: true,
+  bubbles: true,
+  cancelable: true,
+})
+renameHistoryContent?.dispatchEvent(renameUndoEvent)
+check("Undo after image rename does not restore the old path",
+  renameUndoEvent.defaultPrevented
+    && renameHistoryEditor.getMarkdown() === "![Preview](test-pictures/hero.png)")
+renameHistoryEditor.destroy()
 
 const indentedCodeHost = dom.window.document.createElement("div")
 dom.window.document.body.appendChild(indentedCodeHost)
@@ -440,6 +682,126 @@ check("bundled legacy language stays syntax highlighted",
   legacyCodeHost.querySelector(".hl-keyword")?.textContent === "let")
 legacyCodeEditor.destroy()
 
+const detectedCodeHost = dom.window.document.createElement("div")
+dom.window.document.body.appendChild(detectedCodeHost)
+let detectedCodeDirtyCount = 0
+const detectedCodeSource = "intro\n```\nconst answer = 42\n```"
+const detectedCodeEditor = dom.window.MDEditor.create(
+  detectedCodeHost,
+  detectedCodeSource,
+  { onDirty: () => { detectedCodeDirtyCount++ } },
+)
+const detectedLanguageInput = detectedCodeHost.querySelector(
+  ".cm-md-code-language-input"
+)
+check("detected language is shown as the language input value",
+  detectedLanguageInput != null
+    && detectedLanguageInput.value === "javascript"
+    && detectedLanguageInput.placeholder === "language")
+check("detected language applies its CodeMirror highlighting rules",
+  detectedCodeHost.querySelector(".hl-keyword")?.textContent === "const")
+check("automatic language rendering leaves Markdown byte-faithful",
+  detectedCodeEditor.getMarkdown() === detectedCodeSource
+    && detectedCodeDirtyCount === 0)
+detectedLanguageInput?.focus()
+detectedLanguageInput?.blur()
+check("focusing and blurring a detected language does not write the fence",
+  detectedCodeEditor.getMarkdown() === detectedCodeSource
+    && detectedCodeDirtyCount === 0)
+const editableDetectedLanguageInput = detectedCodeHost.querySelector(
+  ".cm-md-code-language-input"
+)
+editableDetectedLanguageInput?.focus()
+if (editableDetectedLanguageInput) {
+  editableDetectedLanguageInput.value = "typescript"
+  editableDetectedLanguageInput.dispatchEvent(
+    new dom.window.Event("change", { bubbles: true })
+  )
+}
+check("language input writes the explicit fence language",
+  detectedCodeEditor.getMarkdown() === "intro\n```typescript\nconst answer = 42\n```")
+detectedCodeEditor.destroy()
+
+const detectedCHost = dom.window.document.createElement("div")
+dom.window.document.body.appendChild(detectedCHost)
+const detectedCSource = "intro\n```\nint main(){\nreturn 0;\n}\n```"
+const detectedCEditor = dom.window.MDEditor.create(
+  detectedCHost, detectedCSource, {})
+const detectedCInput = detectedCHost.querySelector(".cm-md-code-language-input")
+check("C code is automatically marked as c",
+  detectedCInput?.value === "c"
+    && detectedCInput.placeholder === "language")
+check("automatically detected C uses the bundled C parser",
+  Array.from(detectedCHost.querySelectorAll(".hl-keyword"))
+    .some((node) => node.textContent === "int" || node.textContent === "return"))
+check("automatic C rendering does not rewrite the opening fence",
+  detectedCEditor.getMarkdown() === detectedCSource)
+detectedCEditor.destroy()
+
+const metadataCodeHost = dom.window.document.createElement("div")
+dom.window.document.body.appendChild(metadataCodeHost)
+const metadataCodeEditor = dom.window.MDEditor.create(
+  metadataCodeHost, "```js title=\"answer.js\"\nconst answer = 42\n```", {})
+const metadataInput = metadataCodeHost.querySelector(".cm-md-code-language-input")
+metadataInput?.focus()
+if (metadataInput) {
+  metadataInput.value = "typescript"
+  metadataInput.dispatchEvent(new dom.window.Event("change", { bubbles: true }))
+}
+check("language edits preserve fence metadata",
+  metadataCodeEditor.getMarkdown() ===
+    "```typescript title=\"answer.js\"\nconst answer = 42\n```")
+metadataCodeEditor.destroy()
+
+const autoFenceHost = dom.window.document.createElement("div")
+dom.window.document.body.appendChild(autoFenceHost)
+const autoFenceEditor = dom.window.MDEditor.create(autoFenceHost, "intro\n", {})
+autoFenceEditor.select(autoFenceEditor.getMarkdown().length)
+for (const character of "```") autoFenceEditor.insert(character)
+check("typing an opening fence inserts its own closing fence",
+  autoFenceEditor.getMarkdown() === "intro\n```\n\n```")
+const emptyCodeLine = autoFenceHost.querySelector(".cm-md-codeblock-first")
+check("auto-closed empty code line keeps its caret buffer after the language widget",
+  emptyCodeLine?.querySelector(".cm-md-code-language + .cm-widgetBuffer") != null)
+autoFenceEditor.insert("body")
+check("auto-closed fence leaves the cursor in its content",
+  autoFenceEditor.getMarkdown() === "intro\n```\nbody\n```")
+autoFenceEditor.destroy()
+
+const authoredCHost = dom.window.document.createElement("div")
+dom.window.document.body.appendChild(authoredCHost)
+const authoredCEditor = dom.window.MDEditor.create(authoredCHost, "intro\n", {})
+authoredCEditor.select(authoredCEditor.getMarkdown().length)
+for (const character of "```") authoredCEditor.insert(character)
+authoredCEditor.insert("int main(){\nreturn 0;\n}")
+check("newly authored C code is detected and highlighted immediately",
+  authoredCHost.querySelector(".cm-md-code-language-input")?.value === "c"
+    && Array.from(authoredCHost.querySelectorAll(".hl-keyword"))
+      .some((node) => node.textContent === "int" || node.textContent === "return")
+    && authoredCEditor.getMarkdown() ===
+      "intro\n```\nint main(){\nreturn 0;\n}\n```")
+authoredCEditor.destroy()
+
+const unclosedFenceHost = dom.window.document.createElement("div")
+dom.window.document.body.appendChild(unclosedFenceHost)
+const unclosedFenceEditor = dom.window.MDEditor.create(
+  unclosedFenceHost, "```\nbody\n", {})
+unclosedFenceEditor.select(unclosedFenceEditor.getMarkdown().length)
+for (const character of "```") unclosedFenceEditor.insert(character)
+check("typing an existing block's closing fence does not pair it again",
+  unclosedFenceEditor.getMarkdown() === "```\nbody\n```")
+unclosedFenceEditor.destroy()
+
+const emptyFenceHost = dom.window.document.createElement("div")
+dom.window.document.body.appendChild(emptyFenceHost)
+const emptyFenceEditor = dom.window.MDEditor.create(
+  emptyFenceHost, "intro\n```\n```", {})
+check("empty fenced blocks keep their language input visible",
+  emptyFenceHost.querySelector(".cm-md-code-language-input") != null
+    && emptyFenceHost.querySelector(".cm-md-code-language-input")
+      .closest(".cm-line")?.classList.contains("cm-md-line-collapsed") !== true)
+emptyFenceEditor.destroy()
+
 const hclSource = `terraform {
   required_providers {
     random = { source = "hashicorp/random", version = "~> 3.0" }
@@ -489,12 +851,23 @@ dom.window.document.body.appendChild(authoredMermaidHost)
 const authoredMermaidEditor = dom.window.MDEditor.create(
   authoredMermaidHost, "intro\n", {})
 authoredMermaidEditor.select(authoredMermaidEditor.getMarkdown().length)
-for (const character of "```mermaid\nflowchart LR\n  A --> B\n```") {
+for (const character of "```") {
   authoredMermaidEditor.insert(character)
 }
+const authoredMermaidLanguage = authoredMermaidHost.querySelector(
+  ".cm-md-code-language-input"
+)
+if (authoredMermaidLanguage) {
+  authoredMermaidLanguage.value = "mermaid"
+  authoredMermaidLanguage.dispatchEvent(
+    new dom.window.Event("change", { bubbles: true })
+  )
+}
+authoredMermaidEditor.insert("flowchart LR\n  A --> B")
 check("newly typed Mermaid fence remains editable at the cursor",
   authoredMermaidHost.querySelector(".cm-md-mermaid-preview") == null
     && authoredMermaidHost.querySelector(".cm-md-code-fence-source-hidden") == null)
+authoredMermaidEditor.select(authoredMermaidEditor.getMarkdown().length)
 authoredMermaidEditor.insert("\n")
 check("newly typed Mermaid fence previews after the cursor leaves",
   authoredMermaidHost.querySelector(".cm-md-mermaid-preview") != null)
@@ -749,5 +1122,51 @@ check("dragging from a header into the body selects both directions",
   dragSelectedWidget?.querySelectorAll(".is-table-part-selected").length === 6
     && dragSelectedWidget?.getAttribute("aria-label") === "Selected 3 rows by 2 columns.")
 dragTableEditor.destroy()
+
+const findHost = dom.window.document.createElement("div")
+dom.window.document.body.appendChild(findHost)
+const findSource = "# Needle\n\nneedle one\n\npinneedle two\n\nNEEDLE three\n\nliteral a.b [x]\n\nİ needle after unicode\n"
+let lastFindResult
+let searchDirtyCount = 0
+const findEditor = dom.window.MDEditor.create(findHost, findSource, {
+  onDirty: () => searchDirtyCount++,
+  onSearchChange: (result) => { lastFindResult = result },
+})
+const findResult = (query, backwards = false, beginsWith = false) =>
+  findEditor.find(query, backwards, beginsWith)
+check("editor search counts case-insensitive source matches", findResult("needle").total === 5)
+check("editor search highlights without editor focus", findHost.querySelectorAll(".cm-find-match").length === 5)
+check("next match advances", findResult("needle").index === 2)
+check("previous match goes backwards", findResult("needle", true).index === 1)
+check("previous wraps to last match", findResult("needle", true).index === 5)
+check("next wraps to first match", findResult("needle").index === 1)
+check("begins-with excludes mid-word matches and resets index",
+  JSON.stringify(findResult("needle", false, true)) === JSON.stringify({ index: 1, total: 4 }))
+check("search treats regex characters literally", findResult("a.b [x]").total === 1)
+findResult("needle")
+findResult("needle", true)
+check("Unicode before a match preserves highlight offsets",
+  findHost.querySelector(".cm-find-current")?.textContent === "needle")
+check("search navigation preserves document and does not mark dirty",
+  findEditor.getMarkdown() === findSource && searchDirtyCount === 0)
+check("no-match query clears highlights", findResult("absent").total === 0
+  && findHost.querySelector(".cm-find-match") == null)
+findResult("needle")
+findEditor.insertTextAt("needle new\n", findSource.length, findSource.length)
+check("unsaved edits update search count", lastFindResult?.total === 6)
+findResult("")
+check("clearing search removes all decorations", findHost.querySelector(".cm-find-match") == null)
+findEditor.destroy()
+
+const blockFindHost = dom.window.document.createElement("div")
+dom.window.document.body.appendChild(blockFindHost)
+const blockFindSource = "| Heading |\n| --- |\n| needle |\n\n```mermaid\ngraph LR\nneedle-->end\n```\n"
+const blockFindEditor = dom.window.MDEditor.create(blockFindHost, blockFindSource, {})
+check("search finds text inside a rendered table", blockFindEditor.find("needle").total === 2
+  && blockFindHost.querySelector(".cm-find-current")?.textContent === "needle")
+blockFindEditor.find("needle")
+check("search reveals and highlights Mermaid source", blockFindHost.querySelector(".cm-find-current")?.textContent === "needle")
+check("searching rendered blocks preserves source", blockFindEditor.getMarkdown() === blockFindSource)
+blockFindEditor.destroy()
 
 process.exit(failures ? 1 : 0)

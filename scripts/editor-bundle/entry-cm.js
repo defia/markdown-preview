@@ -5,20 +5,20 @@
 // themselves unless the cursor is inside the construct.
 
 import {
-  EditorView, keymap, ViewPlugin, Decoration, WidgetType,
-  drawSelection, dropCursor,
+  EditorView, keymap, ViewPlugin, Decoration, WidgetType, dropCursor,
 } from "@codemirror/view"
-import { EditorState, EditorSelection, StateField } from "@codemirror/state"
+import { Annotation, EditorState, EditorSelection, StateEffect, StateField, Transaction } from "@codemirror/state"
 import {
   defaultKeymap, history, historyKeymap, indentLess, insertTab,
 } from "@codemirror/commands"
+import { closeBrackets, closeBracketsKeymap } from "@codemirror/autocomplete"
 import { markdown, markdownLanguage, markdownKeymap } from "@codemirror/lang-markdown"
 import { yamlFrontmatter } from "@codemirror/lang-yaml"
 import {
-  syntaxTree, ensureSyntaxTree, syntaxHighlighting, HighlightStyle,
+  syntaxTree, syntaxTreeAvailable, ensureSyntaxTree, syntaxHighlighting, HighlightStyle,
   indentUnit, LanguageDescription, LanguageSupport, StreamLanguage,
 } from "@codemirror/language"
-import { tags as t } from "@lezer/highlight"
+import { highlightTree, tags as t } from "@lezer/highlight"
 import { javascript } from "@codemirror/lang-javascript"
 import { python } from "@codemirror/lang-python"
 import { json } from "@codemirror/lang-json"
@@ -38,6 +38,33 @@ import { hcl } from "codemirror-lang-hcl"
 // ---------------------------------------------------------------------------
 // Fenced-code languages
 // ---------------------------------------------------------------------------
+
+// Keep automatic detection conservative. Explicit info-string languages
+// always remain the source of truth.
+function detectLanguage(source) {
+  const text = source.trim()
+  if (!text) return ""
+  if (/^#!.*\b(?:ba)?sh\b|^\s*\$\s+/.test(text)) return "bash"
+  if ((text.startsWith("{") && text.endsWith("}"))
+      || (text.startsWith("[") && text.endsWith("]"))) {
+    try { JSON.parse(text); return "json" } catch (_) {}
+  }
+  if (/^\s*(?:<!DOCTYPE\s+html|<html\b|<(?:div|span|section|article)\b)/i.test(text)) return "html"
+  if (/\b(?:resource|data|provider|variable|module)\s+["'][\w-]+["'](?:\s+["'][\w-]+["'])?\s*\{|\bterraform\s*\{/.test(text)) return "hcl"
+  if (/\b(?:import\s+Foundation|func\s+\w+\s*\(|@main)\b|\b(?:let|var)\s+\w+\s*:\s*(?:String|Int|Bool|Double|Float)\b/.test(text)) return "swift"
+  if (/^\s*(?:#\s*include\s*<iostream>|(?:using\s+namespace\s+std|std::\w+|(?:cout|cin)\s*(?:<<|>>))\b)/m.test(text)) return "cpp"
+  if (/^\s*(?:#\s*include\s*[<"](?:assert|ctype|errno|float|inttypes|limits|math|setjmp|signal|stdarg|stdbool|stddef|stdint|stdio|stdlib|string|time)\.h[>"]|(?:int|void)\s+main\s*\([^)]*\)\s*\{)/m.test(text)) return "c"
+  if (/^\s*(?:async\s+)?def\s+\w+\s*\(|^\s*from\s+\w+[\w.]*\s+import\b|^\s*class\s+\w+\s*[:(]/m.test(text)) return "python"
+  if (/\b(?:SELECT|INSERT|UPDATE|DELETE|CREATE\s+(?:TABLE|VIEW|INDEX)|WITH)\b[\s\S]*\b(?:FROM|INTO|WHERE|AS)\b/i.test(text)) return "sql"
+  if (/(?:^|\n)\s*(?:[#.]?[A-Za-z][\w-]*)\s*\{[\s\S]*:[\s\S]*\}/.test(text)
+      || /@(?:media|keyframes|supports)\b/.test(text)) return "css"
+  if (/^\s*(?:const|let|var)\s+[A-Za-z_$][\w$]*\s*(?::[^=\n]+)?\s*=/m.test(text)
+      || /\b(?:function\s+\w+\s*\(|console\.(?:log|error|warn)|=>)/.test(text)) return "javascript"
+  if (/^\s*(?:[-A-Za-z_][\w-]*):\s*(?:[^:#\n]|$)/m.test(text)
+      && !/[{};]/.test(text)) return "yaml"
+  if (/^\s*(?:echo|printf|export|source|cd|mkdir|rm|cp|mv)\s+/m.test(text)) return "bash"
+  return ""
+}
 
 // Every parser is already part of this offline bundle, so register support
 // synchronously. Lazy Promise loaders only delayed highlighting on the first
@@ -77,6 +104,66 @@ const codeLanguages = [
 ]
 
 // ---------------------------------------------------------------------------
+// Obsidian-style text highlights
+// ---------------------------------------------------------------------------
+
+const highlightDelimiter = { resolve: "Highlight", mark: "HighlightMark" }
+const highlightPunctuation = /[\p{S}\p{P}]/u
+
+function highlightWhitespace(value) {
+  return !value || /\s/.test(value)
+}
+
+function highlightPunctuationAround(value) {
+  return !!value && highlightPunctuation.test(value)
+}
+
+// Lezer's delimiter resolver then handles nesting with emphasis, links, and
+// adjacent highlights. Keeping the parser extension here (rather than
+// matching the DOM after parsing) also means code spans and fenced code are
+// naturally excluded by the Markdown grammar.
+const obsidianHighlight = {
+  defineNodes: ["Highlight", "HighlightMark"],
+  parseInline: [{
+    name: "Highlight",
+    parse(cx, next, pos) {
+      if (next !== 61 || cx.char(pos + 1) !== 61) return -1
+      let runStart = pos
+      while (runStart > cx.offset && cx.char(runStart - 1) === 61) runStart--
+      let runEnd = pos + 2
+      while (cx.char(runEnd) === 61) runEnd++
+      const pairStart = runStart + ((runEnd - runStart) % 2)
+      if (pos < pairStart || (pos - pairStart) % 2 !== 0) return -1
+      let backslashes = 0
+      for (let cursor = runStart - 1;
+           cursor >= cx.offset && cx.char(cursor) === 92;
+           cursor--) {
+        backslashes++
+      }
+      if (backslashes % 2 !== 0) return -1
+      const before = cx.slice(runStart - 1, runStart)
+      const after = cx.slice(runEnd, runEnd + 1)
+      const spaceBefore = highlightWhitespace(before)
+      const spaceAfter = highlightWhitespace(after)
+      const punctuationBefore = highlightPunctuationAround(before)
+      const punctuationAfter = highlightPunctuationAround(after)
+      const leftFlanking = !spaceAfter
+        && (!punctuationAfter || spaceBefore || punctuationBefore)
+      const rightFlanking = !spaceBefore
+        && (!punctuationBefore || spaceAfter || punctuationAfter)
+      return cx.addDelimiter(
+        highlightDelimiter,
+        pos,
+        pos + 2,
+        leftFlanking,
+        rightFlanking,
+      )
+    },
+    after: "Emphasis",
+  }],
+}
+
+// ---------------------------------------------------------------------------
 // Live preview decorations
 // ---------------------------------------------------------------------------
 
@@ -90,6 +177,73 @@ class TextWidget extends WidgetType {
     return span
   }
   ignoreEvent() { return false }
+}
+
+class ImageWidget extends WidgetType {
+  constructor(source, alt, raw, from, to) {
+    super()
+    this.source = source
+    this.alt = alt
+    this.raw = raw
+    this.from = from
+    this.to = to
+  }
+
+  eq(other) {
+    return other.source === this.source
+      && other.alt === this.alt
+      && other.raw === this.raw
+      && other.from === this.from
+      && other.to === this.to
+  }
+
+  toDOM(view) {
+    const root = document.createElement("span")
+    root.className = "cm-md-image-preview"
+    root.setAttribute("role", "figure")
+
+    const image = document.createElement("img")
+    image.src = this.source
+    image.alt = this.alt
+    image.draggable = false
+    image.addEventListener("error", () => root.classList.add("cm-md-image-error"), { once: true })
+
+    const source = document.createElement("code")
+    source.className = "cm-md-image-source"
+    source.textContent = this.raw
+    source.title = "Click to edit image source"
+
+    const revealSource = (event) => {
+      event.preventDefault()
+      event.stopPropagation()
+      view.focus()
+      view.dispatch({
+        selection: { anchor: Math.min(this.from + 2, this.to) },
+        userEvent: "select.pointer",
+      })
+    }
+    source.addEventListener("mousedown", revealSource)
+    source.addEventListener("click", revealSource)
+    image.addEventListener("mousedown", (event) => {
+      event.preventDefault()
+      event.stopPropagation()
+    })
+    image.addEventListener("click", (event) => {
+      event.preventDefault()
+      event.stopPropagation()
+      const resolved = image.currentSrc || image.src
+      if (resolved.startsWith("md-asset:")) {
+        window.__mdRequestImageRename?.(resolved)
+      } else {
+        revealSource(event)
+      }
+    })
+
+    root.append(image, source)
+    return root
+  }
+
+  ignoreEvent() { return true }
 }
 
 class RuleWidget extends WidgetType {
@@ -139,6 +293,16 @@ class MermaidWidget extends WidgetType {
     Promise.resolve(mermaid.render(id, this.source))
       .then(({ svg }) => {
         stage.innerHTML = svg
+        const diagram = stage.querySelector("svg")
+        const box = diagram?.viewBox?.baseVal
+        if (diagram && box?.width > 0 && box?.height > 0) {
+          figure.style.setProperty("--mm-aspect", `${box.width} / ${box.height}`)
+          diagram.removeAttribute("width")
+          diagram.removeAttribute("height")
+          diagram.setAttribute("preserveAspectRatio", "xMidYMid meet")
+          diagram.style.width = "100%"
+          diagram.style.height = "100%"
+        }
         view.requestMeasure()
       })
       .catch(() => {
@@ -147,6 +311,87 @@ class MermaidWidget extends WidgetType {
         view.requestMeasure()
       })
     return figure
+  }
+
+  ignoreEvent() { return true }
+}
+
+// Language input widget for every fenced block, including blocks without an
+// info string. The source range is rebuilt after each commit, so the widget
+// remains anchored while its input edits the opening line.
+class CodeLanguageWidget extends WidgetType {
+  constructor(details) {
+    super()
+    Object.assign(this, details)
+  }
+
+  eq(other) {
+    return other.fenceFrom === this.fenceFrom
+      && other.infoFrom === this.infoFrom
+      && other.infoTo === this.infoTo
+      && other.rawInfo === this.rawInfo
+      && other.detectedLanguage === this.detectedLanguage
+  }
+
+  toDOM(view) {
+    const container = document.createElement("span")
+    container.className = "cm-md-code-language"
+    container.contentEditable = "false"
+
+    const input = document.createElement("input")
+    input.type = "text"
+    input.className = "cm-md-code-language-input"
+    input.autocomplete = "off"
+    input.spellcheck = false
+    input.value = this.language
+    input.placeholder = "language"
+    input.setAttribute("aria-label", "Code block language")
+    input.dataset.fenceFrom = String(this.fenceFrom)
+
+    const metadata = this.rawInfo.match(/^\S+([\s\S]*)$/)?.[1] || ""
+    const initialDisplayValue = input.value
+    let commitOnBlur = true
+    let dispatchingCommit = false
+    const commit = () => {
+      const language = input.value.trim().split(/\s+/, 1)[0].toLowerCase()
+      const nextInfo = language
+        ? language + metadata
+        : ""
+      if (nextInfo === this.rawInfo) return
+      if (input.value === initialDisplayValue) return
+      dispatchingCommit = true
+      view.dispatch({
+        changes: { from: this.infoFrom, to: this.infoTo, insert: nextInfo },
+        userEvent: "input",
+      })
+    }
+
+    input.addEventListener("change", commit)
+    input.addEventListener("keydown", (event) => {
+      event.stopPropagation()
+      if (event.key === "Enter") {
+        event.preventDefault()
+        commit()
+        input.blur()
+        view.focus()
+      } else if (event.key === "Escape") {
+        event.preventDefault()
+        commitOnBlur = false
+        input.value = this.language
+        input.blur()
+        view.focus()
+      }
+    })
+    input.addEventListener("mousedown", (event) => event.stopPropagation())
+    input.addEventListener("click", (event) => event.stopPropagation())
+    input.addEventListener("blur", () => {
+      if (commitOnBlur && !dispatchingCommit) commit()
+      dispatchingCommit = false
+      commitOnBlur = true
+    })
+
+    container.appendChild(input)
+    return container
   }
 
   ignoreEvent() { return true }
@@ -628,12 +873,59 @@ class TableEditorWidget extends WidgetType {
   ignoreEvent() { return true }
 }
 
+// Search the source buffer, including lines outside CodeMirror's mounted DOM.
+// Decorations keep highlights visible while the native toolbar owns focus.
+const setFind = StateEffect.define()
+function findState(doc, query, beginsWith, index = 0) {
+  const matches = []
+  if (query) {
+    const pattern = new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "giu")
+    const text = doc.toString()
+    for (const match of text.matchAll(pattern)) {
+      const from = match.index
+      if (!beginsWith || from === 0 || !/[A-Za-z0-9_]/.test(text[from - 1])) {
+        matches.push({ from, to: from + match[0].length })
+      }
+    }
+  }
+  index = matches.length ? Math.min(Math.max(index, 0), matches.length - 1) : -1
+  const decorations = Decoration.set(matches.map((match, i) =>
+    Decoration.mark({ class: i === index ? "cm-find-match cm-find-current" : "cm-find-match" })
+      .range(match.from, match.to)))
+  return { query, beginsWith, matches, index, decorations }
+}
+const documentFind = StateField.define({
+  create: (state) => findState(state.doc, "", false),
+  update(value, tr) {
+    for (const effect of tr.effects) {
+      if (effect.is(setFind)) {
+        const { query, beginsWith, index } = effect.value
+        return findState(tr.state.doc, query, beginsWith, index)
+      }
+    }
+    return tr.docChanged
+      ? findState(tr.state.doc, value.query, value.beginsWith, value.index)
+      : value
+  },
+  provide: (field) => EditorView.decorations.from(field, (value) => value.decorations),
+})
+function currentFindTouches(state, from, to) {
+  const search = state.field(documentFind)
+  const match = search.matches[search.index]
+  return !!match && match.from < to && match.to > from
+}
+const findTheme = EditorView.baseTheme({
+  ".cm-find-match": { backgroundColor: "#ffe58a", color: "#201800", borderRadius: "2px" },
+  ".cm-find-current": { backgroundColor: "#ffad33", outline: "1px solid #9b5700" },
+})
+
 function buildTableEditors(state) {
   const ranges = []
   const tree = ensureSyntaxTree(state, state.doc.length, 80) || syntaxTree(state)
   tree.iterate({
     enter(node) {
       if (node.name !== "Table") return
+      if (currentFindTouches(state, node.from, node.to)) return false
       const source = state.doc.sliceString(node.from, node.to)
       if (!parseTableSource(source)) return
       ranges.push(Decoration.replace({
@@ -648,7 +940,7 @@ function buildTableEditors(state) {
 
 const tableEditors = StateField.define({
   create: buildTableEditors,
-  update: (value, transaction) => transaction.docChanged
+  update: (value, transaction) => transaction.docChanged || transaction.effects.some((effect) => effect.is(setFind))
     ? buildTableEditors(transaction.state)
     : value,
   provide: (field) => EditorView.decorations.from(field),
@@ -657,7 +949,21 @@ const tableEditors = StateField.define({
 const hide = Decoration.replace({})
 const bulletDeco = Decoration.replace({ widget: new TextWidget("•", "cm-md-bullet") })
 const activeBulletDeco = Decoration.mark({ class: "cm-md-bullet-source" })
+// Ordered markers sit in the same hanging box as bullets, right-aligned and
+// in the accent color, so item text lines up across list kinds like the
+// preview's ::marker. The active marker stays editable source in that box.
+const orderedDecoCache = new Map()
+const orderedDeco = (mark) => {
+  let deco = orderedDecoCache.get(mark)
+  if (!deco) {
+    deco = Decoration.replace({ widget: new TextWidget(mark, "cm-md-ordered") })
+    orderedDecoCache.set(mark, deco)
+  }
+  return deco
+}
+const activeOrderedDeco = Decoration.mark({ class: "cm-md-ordered-source" })
 const hrDeco = Decoration.replace({ widget: new RuleWidget() })
+const ruleLine = Decoration.line({ class: "cm-md-rule-line" })
 const markdownListMarker = /^([ \t]*)([-+*]|\d+[.)])([ \t]+|$)/
 
 const joinDeco = Decoration.replace({ widget: new TextWidget(" ", "cm-md-join") })
@@ -667,6 +973,7 @@ const for_ = (i) => Decoration.line({ class: "cm-md-h" + i })
 for (let i = 1; i <= 6; i++) HEADING_LINE[i] = for_(i)
 const inactiveHeadingLine = Decoration.line({ class: "cm-md-heading-inactive" })
 const headingAfterBlankLine = Decoration.line({ class: "cm-md-heading-after-blank" })
+const imageLine = Decoration.line({ class: "cm-md-image-line" })
 // Inactive fence source lines collapse because the rendered code card owns
 // their height.
 const collapsedLine = Decoration.line({ class: "cm-md-line-collapsed" })
@@ -705,7 +1012,56 @@ const blockSeparatorLine = (height) => {
   }
   return deco
 }
-const quoteLine = Decoration.line({ class: "cm-md-quote" })
+// A block that starts on the line right after another block (no authored
+// blank between them) still gets its margin-top in the preview. Mirror it as
+// padding-bottom on the previous block's last line; padding, not margin, so
+// CodeMirror's per-line height measurement stays exact. The same value is
+// exposed as a variable so pseudo-element bars can stop above the gap.
+const blockGapLineCache = new Map()
+const blockGapLine = (height) => {
+  let deco = blockGapLineCache.get(height)
+  if (!deco) {
+    deco = Decoration.line({
+      class: "cm-md-block-gap",
+      attributes: { style: `padding-bottom:${height}px;--cm-md-block-gap:${height}px;` },
+    })
+    blockGapLineCache.set(height, deco)
+  }
+  return deco
+}
+// Quotation lines carry their nesting depth: the preview indents each nested
+// blockquote by another 1.5em and draws one rule per level. Depth is
+// resolved per line after the tree walk, so a line inside two blockquotes
+// gets one decoration at depth 2 rather than two competing ones.
+const quoteLineCache = new Map()
+const quoteLine = (depth, starts, ends, gap) => {
+  const key = `${depth}:${starts}:${ends}:${gap}`
+  let deco = quoteLineCache.get(key)
+  if (!deco) {
+    const positions = []
+    const images = []
+    for (let level = 0; level < depth; level++) {
+      positions.push(`calc(0.3em + ${level * 1.5}em) var(--cm-md-quote-top)`)
+      images.push("linear-gradient(var(--quote-border), var(--quote-border))")
+    }
+    deco = Decoration.line({
+      class: "cm-md-quote",
+      attributes: {
+        style: `padding-inline-start:${depth * 1.5}em;`
+          + `--cm-md-quote-top:calc(${starts * 0.4}em + ${gap}px);--cm-md-quote-bottom:${ends * 0.4}em;`
+          + `background-image:${images.join(",")};`
+          + `background-position:${positions.join(",")};`,
+      },
+    })
+    quoteLineCache.set(key, deco)
+  }
+  return deco
+}
+// Lines of a list item that carry no marker (a continuation paragraph, a
+// nested code block) align with the item text: same depth padding, but no
+// hanging indent, and the source indentation is hidden like a nested
+// marker's.
+const listContinuationLine = Decoration.line({ class: "cm-md-list-continuation" })
 const codeLine = Decoration.line({ class: "cm-md-codeblock" })
 const codeLineFirst = Decoration.line({ class: "cm-md-codeblock cm-md-codeblock-first" })
 const codeLineLast = Decoration.line({ class: "cm-md-codeblock cm-md-codeblock-last" })
@@ -723,7 +1079,7 @@ const listDepthLine = (depth) => {
     deco = Decoration.line({
       class: `cm-md-list-depth-${depth}`,
       attributes: {
-        style: `padding-inline-start:${depth * 1.6}em;text-indent:-1.6em;`,
+        style: `padding-inline-start:${depth * 2.1}em;text-indent:-2.1em;`,
       },
     })
     listDepthLineCache.set(depth, deco)
@@ -740,6 +1096,7 @@ const urlMark = Decoration.mark({ class: "cm-md-url" })
 const strongMark = Decoration.mark({ class: "cm-md-strong" })
 const emphasisMark = Decoration.mark({ class: "cm-md-emphasis" })
 const strikethroughMark = Decoration.mark({ class: "cm-md-strikethrough" })
+const highlightMark = Decoration.mark({ class: "cm-md-highlight" })
 const frontmatterLine = Decoration.line({ class: "cm-md-frontmatter" })
 const frontmatterFirstLine = Decoration.line({ class: "cm-md-frontmatter-first" })
 const frontmatterLastLine = Decoration.line({ class: "cm-md-frontmatter-last" })
@@ -765,20 +1122,37 @@ const directionLines = StateField.define({
 
 function fencedCodeDetails(state, node) {
   let info = ""
+  let infoNode = null
   const codeMarks = []
   for (let child = node.node.firstChild; child; child = child.nextSibling) {
-    if (child.name === "CodeInfo") info = state.doc.sliceString(child.from, child.to)
+    if (child.name === "CodeInfo") {
+      infoNode = child
+      info = state.doc.sliceString(child.from, child.to)
+    }
     if (child.name === "CodeMark") codeMarks.push(child)
   }
 
-  const language = info.trim().split(/\s+/, 1)[0].toLowerCase()
+  const explicitLanguage = info.trim().split(/\s+/, 1)[0].toLowerCase()
   const openingLine = state.doc.lineAt(node.from)
+  const openingMark = codeMarks[0]
   const sourceFrom = openingLine.to < state.doc.length ? openingLine.to + 1 : openingLine.to
   let sourceTo = node.to
   if (codeMarks.length > 1) sourceTo = state.doc.lineAt(codeMarks[codeMarks.length - 1].from).from
+  const source = state.doc.sliceString(sourceFrom, sourceTo).replace(/\n$/, "")
+  const detectedLanguage = explicitLanguage ? "" : detectLanguage(source)
+  const infoFrom = infoNode?.from ?? openingMark?.to ?? openingLine.to
+  const infoTo = infoNode?.to ?? infoFrom
+
   return {
-    language,
-    source: state.doc.sliceString(sourceFrom, sourceTo).replace(/\n$/, ""),
+    explicitLanguage,
+    language: explicitLanguage || detectedLanguage,
+    detectedLanguage,
+    metadata: info.trim().split(/\s+/).slice(1).join(" "),
+    rawInfo: info,
+    infoFrom,
+    infoTo,
+    sourceFrom,
+    source,
   }
 }
 
@@ -787,7 +1161,13 @@ function fencedCodeAt(state, pos) {
   // not retain FencedCode as one of its parents.
   let node = syntaxTree(state).resolve(pos, -1)
   while (node) {
-    if (node.name === "FencedCode") return { from: node.from, to: node.to }
+    if (node.name === "FencedCode") {
+      return {
+        from: node.from,
+        to: node.to,
+        closed: node.node.lastChild?.name === "CodeMark",
+      }
+    }
     node = node.parent
   }
   return null
@@ -835,7 +1215,7 @@ function buildMermaidPreviews(state) {
       const details = fencedCodeDetails(state, node)
       const isActive = activeFence != null
         && node.from <= activeFence.from && node.to >= activeFence.to
-      if (details.language === "mermaid" && !isActive) {
+      if (details.language === "mermaid" && !isActive && !currentFindTouches(state, node.from, node.to)) {
         ranges.push(Decoration.replace({
           block: true,
           widget: new MermaidWidget(details.source),
@@ -867,14 +1247,40 @@ const mermaidPreviews = StateField.define({
       })
     }
 
-    if (activeChanged || fenceSyntaxChanged) return buildMermaidPreviews(tr.state)
+    if (activeChanged || fenceSyntaxChanged || tr.effects.some((effect) => effect.is(setFind))
+        || (tr.docChanged && tr.state.field(documentFind).query)) return buildMermaidPreviews(tr.state)
     if (tr.docChanged) return value.map(tr.changes)
     return value
   },
   provide: (field) => EditorView.decorations.from(field),
 })
 
-function buildDecorations(view) {
+function detectedCodeHighlights(details, cache) {
+  const cached = cache.get(details.sourceFrom)
+  if (cached?.language === details.detectedLanguage
+      && cached.source === details.source) {
+    return cached.tokens
+  }
+
+  const tokens = []
+  const language = LanguageDescription.matchLanguageName(
+    codeLanguages, details.detectedLanguage, false
+  )?.support?.language
+  if (language) {
+    highlightTree(language.parser.parse(details.source), codeHighlight,
+      (from, to, classes) => {
+        tokens.push({ from, to, mark: Decoration.mark({ class: classes }) })
+      })
+  }
+  cache.set(details.sourceFrom, {
+    language: details.detectedLanguage,
+    source: details.source,
+    tokens,
+  })
+  return tokens
+}
+
+function buildDecorations(view, detectedCodeCache) {
   const ranges = []
   const { state } = view
   const sel = state.selection.main
@@ -886,14 +1292,14 @@ function buildDecorations(view) {
   // A range selection is an operation on rendered content, not a request to
   // reveal every Markdown marker it spans. Only a caret activates source
   // syntax; this keeps Cmd-A and long drag selections in live-preview form.
-  const touches = (from, to) => view.hasFocus && sel.empty
-    && sel.head >= from && sel.head <= to
+  const touches = (from, to) => currentFindTouches(state, from, to)
+    || (view.hasFocus && sel.empty && sel.head >= from && sel.head <= to)
   const touchesLineOf = (pos) => {
     const line = state.doc.lineAt(pos)
     return touches(line.from, line.to)
   }
-  const isActiveFence = (node) => activeFence != null
-    && node.from <= activeFence.from && node.to >= activeFence.to
+  const isActiveFence = (node) => currentFindTouches(state, node.from, node.to)
+    || (activeFence != null && node.from <= activeFence.from && node.to >= activeFence.to)
   const decoratedLines = new Set()
   const listDepthPositions = new Set()
   const lineOnce = (pos, deco) => {
@@ -991,6 +1397,16 @@ function buildDecorations(view) {
       default: return METRICS.paragraph
     }
   }
+  // Adjacent blocks: the preview gives the second block its margin-top even
+  // without a blank line (a paragraph right under a heading, a fence right
+  // after a paragraph). Put that gap on the previous block's last line.
+  let frontmatterTo = -1
+  const gapBeforeAdjacent = (node) => {
+    const line = state.doc.lineAt(node.from)
+    if (line.number === 1 || line.from <= frontmatterTo) return
+    if (blankRunBefore(node.from).count !== 0) return
+    lineOnce(state.doc.line(line.number - 1).from, blockGapLine(blockMarginTop(node)))
+  }
   const separatorBlankBefore = (node) => {
     const run = blankRunBefore(node.from)
     if (run.count === 0) return
@@ -1014,6 +1430,8 @@ function buildDecorations(view) {
   // materializing a SyntaxNode per visited node.
   let depth = 0
   const listStack = []
+  const quoteStack = []
+  const quoteLines = new Map()
 
   for (const { from, to } of view.visibleRanges) {
     let contentDocumentDepth = null
@@ -1027,7 +1445,10 @@ function buildDecorations(view) {
 
         // --- Block separators ------------------------------------------
         if (contentDocumentDepth != null && depth === contentDocumentDepth + 1) {
-          if (SEPARATOR_BLOCKS.has(name)) separatorBlankBefore(node)
+          if (SEPARATOR_BLOCKS.has(name)) {
+            separatorBlankBefore(node)
+            gapBeforeAdjacent(node)
+          }
         }
 
         // --- Frontmatter ----------------------------------------------
@@ -1038,6 +1459,7 @@ function buildDecorations(view) {
           // step back so the card never bleeds onto the first body line.
           const end = node.to > node.from && state.doc.lineAt(node.to).from === node.to
             ? node.to - 1 : node.to
+          frontmatterTo = end
           eachLine(node.from, end, frontmatterLine)
           lineOnce(node.from, frontmatterFirstLine)
           lineOnce(state.doc.lineAt(end).from, frontmatterLastLine)
@@ -1086,7 +1508,28 @@ function buildDecorations(view) {
 
         // --- Blockquotes ----------------------------------------------
         if (name === "Blockquote") {
-          eachLine(node.from, node.to, quoteLine)
+          quoteStack.push(node.from)
+          const quoteFirst = state.doc.lineAt(node.from)
+          const parentQuote = node.node.parent?.name === "Blockquote"
+          let previous = node.node.prevSibling
+          while (previous?.name === "QuoteMark") previous = previous.prevSibling
+          const nestedGap = parentQuote && previous ? METRICS.quote : 0
+          let pos = node.from
+          while (pos <= node.to) {
+            const line = state.doc.lineAt(pos)
+            const edges = quoteLines.get(line.from) || { depth: 0, starts: 0, ends: 0, gap: 0 }
+            edges.depth = Math.max(edges.depth, quoteStack.length)
+            // Match the preview's 0.4em padding once per quote boundary,
+            // not once per source line (which may wrap or soft-join).
+            if (line.from === quoteFirst.from) {
+              edges.starts++
+              edges.gap += nestedGap
+            }
+            if (line.to >= node.to) edges.ends++
+            quoteLines.set(line.from, edges)
+            if (line.to >= node.to) break
+            pos = line.to + 1
+          }
           return
         }
         if (name === "QuoteMark") {
@@ -1094,6 +1537,25 @@ function buildDecorations(view) {
             const after = state.doc.sliceString(node.to, node.to + 1)
             ranges.push(hide.range(node.from, node.to + (after === " " ? 1 : 0)))
           }
+          return
+        }
+
+        // Container paragraphs use their own semantic margin. Their blank
+        // source lines are not top-level authored spacers in the preview.
+        if (name === "Paragraph" && /^(Blockquote|ListItem)$/.test(node.node.parent?.name || "")) {
+          const first = state.doc.lineAt(node.from)
+          if (first.number > state.doc.lineAt(node.node.parent.from).number) {
+            const previous = state.doc.line(first.number - 1)
+            if (/^(?:[ >]*)$/.test(previous.text)) {
+              lineOnce(previous.from, blockSeparatorLine(METRICS.paragraph))
+            }
+          }
+        }
+
+        // Escape markers disappear in live preview; the literal character
+        // still belongs to the original editable source.
+        if (name === "Escape" && !touches(node.from, node.to)) {
+          ranges.push(hide.range(node.from, node.from + 1))
           return
         }
 
@@ -1108,6 +1570,25 @@ function buildDecorations(view) {
         }
         if (name === "Strikethrough") {
           ranges.push(strikethroughMark.range(node.from, node.to))
+          return
+        }
+        if (name === "Highlight") {
+          const marks = []
+          for (let child = node.node.firstChild; child; child = child.nextSibling) {
+            if (child.name === "HighlightMark") marks.push(child)
+          }
+          const contentFrom = marks.length ? marks[0].to : node.from
+          const contentTo = marks.length > 1 ? marks[marks.length - 1].from : node.to
+          if (contentFrom < contentTo) {
+            ranges.push(highlightMark.range(contentFrom, contentTo))
+          }
+          return
+        }
+        if (name === "HighlightMark") {
+          const parent = node.node.parent
+          if (parent && parent.name === "Highlight" && !touches(parent.from, parent.to)) {
+            ranges.push(hide.range(node.from, node.to))
+          }
           return
         }
         if (name === "EmphasisMark" || name === "StrikethroughMark") {
@@ -1145,6 +1626,49 @@ function buildDecorations(view) {
             ranges.push(hiddenCodeFenceSource.range(line.from, line.to))
           }
           return
+        }
+
+        // --- Images -------------------------------------------------------
+        // Render direct image destinations in place. Keeping the raw node
+        // active under the caret makes the source editable without a second
+        // editor surface; reference-style images stay as authored source.
+        if (name === "Image") {
+          // Pruning this node also skips Lezer's leave callback. Balance the
+          // depth here so later top-level blocks still get paragraph spacing.
+          depth--
+          const urlNode = node.node.getChild("URL")
+          if (!urlNode) return false
+          const rawSource = state.doc.sliceString(urlNode.from, urlNode.to).trim()
+          const source = rawSource.startsWith("<") && rawSource.endsWith(">")
+            ? rawSource.slice(1, -1)
+            : rawSource
+          if (!source || source.startsWith("//")) return false
+
+          let altEnd = node.from + 2
+          for (let child = node.node.firstChild; child; child = child.nextSibling) {
+            if (child.name === "LinkMark"
+                && state.doc.sliceString(child.from, child.to) === "]") {
+              altEnd = child.from
+              break
+            }
+          }
+          const alt = state.doc.sliceString(node.from + 2, altEnd)
+          if (!touches(node.from, node.to)) {
+            const line = state.doc.lineAt(node.from)
+            if (line.text.trim() === state.doc.sliceString(node.from, node.to)) {
+              lineOnce(line.from, imageLine)
+            }
+            ranges.push(Decoration.replace({
+              widget: new ImageWidget(
+                source,
+                alt,
+                state.doc.sliceString(node.from, node.to),
+                node.from,
+                node.to,
+              ),
+            }).range(node.from, node.to))
+          }
+          return false
         }
 
         // --- Links ------------------------------------------------------
@@ -1189,12 +1713,37 @@ function buildDecorations(view) {
           // list starts at its first item, so "first" is a position check.
           const isFirstItem = node.from === listStack[listStack.length - 1]
           const isNested = listStack.length > 1
+          if (!isFirstItem) {
+            let number = state.doc.lineAt(node.from).number - 1
+            while (number > 0 && state.doc.line(number).text.trim() === "") {
+              lineOnce(state.doc.line(number).from, blockSeparatorLine(0))
+              number--
+            }
+          }
           if (!isFirstItem || isNested) lineOnce(node.from, listItemGapLine)
           eachLine(node.from, node.to, listItemLine)
           lineOnce(node.from, listDepthLine(listStack.length))
           listDepthPositions.add(state.doc.lineAt(node.from).from)
+          // Continuation lines of this item (not nested markers, not blank)
+          // sit at the item's text column with their indentation hidden.
+          {
+            const firstLine = state.doc.lineAt(node.from)
+            let pos = firstLine.to + 1
+            while (pos <= node.to) {
+              const line = state.doc.lineAt(pos)
+              const text = line.text
+              if (text.length > 0 && !markdownListMarker.test(text)) {
+                lineOnce(line.from, listContinuationLine)
+                lineOnce(line.from, listDepthLine(listStack.length))
+                const lead = text.match(/^[ \t]+/)
+                if (lead) ranges.push(hide.range(line.from, line.from + lead[0].length))
+              }
+              if (line.to >= node.to) break
+              pos = line.to + 1
+            }
+          }
           // Source indentation uses proportional-font space glyphs, which
-          // does not equal the rendered list's 1.6em nesting step. Hide that
+          // does not equal the rendered list's 2.1em nesting step. Hide that
           // source-only prefix and let the semantic depth line own geometry.
           const line = state.doc.lineAt(node.from)
           const rawIndentedList = line.text.match(markdownListMarker)
@@ -1221,6 +1770,14 @@ function buildDecorations(view) {
             } else {
               ranges.push(bulletDeco.range(node.from, node.to + (after === " " ? 1 : 0)))
             }
+          } else if (/^\d+[.)]$/.test(mark) && !isTask) {
+            const after = state.doc.sliceString(node.to, node.to + 1)
+            if (touchesLineOf(node.from)) {
+              ranges.push(activeOrderedDeco.range(node.from, node.to))
+              if (after === " ") ranges.push(hide.range(node.to, node.to + 1))
+            } else {
+              ranges.push(orderedDeco(mark).range(node.from, node.to + (after === " " ? 1 : 0)))
+            }
           }
           return
         }
@@ -1241,8 +1798,34 @@ function buildDecorations(view) {
           const hidesClosingFence = closed && !touchesLineOf(last.from)
           const codeFirst = hidesOpeningFence && hasInterior
             ? state.doc.line(first.number + 1) : first
-          const codeLast = hidesClosingFence && hasInterior
-            ? state.doc.line(last.number - 1) : last
+          const widgetLine = hasInterior ? codeFirst : first
+          const codeLast = !hasInterior && name === "FencedCode"
+            ? first
+            : hidesClosingFence
+              ? state.doc.line(last.number - 1)
+              : last
+          if (name === "FencedCode") {
+            const details = fencedCodeDetails(state, node)
+            if (details.detectedLanguage) {
+              for (const token of detectedCodeHighlights(details, detectedCodeCache)) {
+                ranges.push(token.mark.range(
+                  details.sourceFrom + token.from,
+                  details.sourceFrom + token.to,
+                ))
+              }
+            }
+            ranges.push(Decoration.widget({
+              widget: new CodeLanguageWidget({
+                fenceFrom: node.from,
+                language: details.language,
+                detectedLanguage: details.detectedLanguage,
+                rawInfo: details.rawInfo,
+                infoFrom: details.infoFrom,
+                infoTo: details.infoTo,
+              }),
+              side: -1,
+            }).range(widgetLine.from))
+          }
           let pos = node.from
           while (pos <= node.to) {
             const line = state.doc.lineAt(pos)
@@ -1256,11 +1839,14 @@ function buildDecorations(view) {
               pos = line.to + 1
               continue
             }
-            if ((hidesOpeningFence && line.from === first.from)
-                || (hidesClosingFence && line.from === last.from)) {
+            const isWidgetLine = name === "FencedCode"
+              && line.from === widgetLine.from
+            if (((hidesOpeningFence && line.from === first.from)
+                || (hidesClosingFence && line.from === last.from))
+                && !isWidgetLine) {
               lineOnce(line.from, collapsedLine)
             } else if (name === "FencedCode" && !hasInterior
-                && line.from !== first.from) {
+                && line.from !== first.from && !isWidgetLine) {
               lineOnce(line.from, collapsedLine)
             } else {
               const isFirst = line.from === codeFirst.from
@@ -1280,9 +1866,8 @@ function buildDecorations(view) {
         }
         if (name === "CodeInfo") {
           const parent = node.node.parent
-          if (!parent || touchesLineOf(parent.from)) {
-            ranges.push(fenceMark.range(node.from, node.to))
-          }
+          if (!parent) return
+          if (touchesLineOf(parent.from)) ranges.push(fenceMark.range(node.from, node.to))
           return
         }
 
@@ -1295,6 +1880,7 @@ function buildDecorations(view) {
         // --- Horizontal rule ----------------------------------------------
         if (name === "HorizontalRule") {
           if (!touchesLineOf(node.from)) {
+            lineOnce(node.from, ruleLine)
             ranges.push(hrDeco.range(node.from, node.to))
           }
           return
@@ -1304,8 +1890,13 @@ function buildDecorations(view) {
         depth--
         const name = node.name
         if (name === "BulletList" || name === "OrderedList") listStack.pop()
+        if (name === "Blockquote") quoteStack.pop()
       },
     })
+    for (const [lineFrom, edges] of quoteLines) {
+      lineOnce(lineFrom, quoteLine(edges.depth, edges.starts, edges.ends, edges.gap))
+    }
+    quoteLines.clear()
     // A deeply indented marker may be parsed as continuation content inside
     // its ancestor ListItem rather than as a standalone CodeBlock. The parent
     // already gives that line list typography; fill in the missing depth,
@@ -1330,10 +1921,18 @@ function buildDecorations(view) {
 }
 
 const livePreview = ViewPlugin.fromClass(class {
-  constructor(view) { this.decorations = buildDecorations(view) }
+  constructor(view) {
+    this.detectedCodeCache = new Map()
+    this.decorations = buildDecorations(view, this.detectedCodeCache)
+  }
   update(update) {
-    if (update.docChanged || update.selectionSet || update.viewportChanged || update.focusChanged) {
-      this.decorations = buildDecorations(update.view)
+    if (update.docChanged) this.detectedCodeCache.clear()
+    // Background parsing can finish without a document, selection, or viewport
+    // change. Refresh widgets then too, or images can stay as source until input.
+    if (update.docChanged || update.selectionSet || update.viewportChanged || update.focusChanged
+        || syntaxTree(update.startState) !== syntaxTree(update.state)
+        || update.startState.field(documentFind) !== update.state.field(documentFind)) {
+      this.decorations = buildDecorations(update.view, this.detectedCodeCache)
     }
   }
 }, { decorations: (v) => v.decorations })
@@ -1575,6 +2174,66 @@ function insertLink(view) {
   return true
 }
 
+// A second fence typed inside an existing block is a deliberate closing mark,
+// so only a fence that starts its own line can be paired automatically.
+const autoClosedFence = Annotation.define()
+
+function fenceStartAt(state, pos) {
+  let node = syntaxTree(state).resolve(pos, -1)
+  while (node) {
+    if (node.name === "FencedCode") return node.from
+    node = node.parent
+  }
+  return null
+}
+
+const autoCloseFence = EditorState.transactionFilter.of((tr) => {
+  if (!tr.docChanged || !tr.isUserEvent("input") || tr.annotation(autoClosedFence)) {
+    return tr
+  }
+
+  const selection = tr.newSelection.main
+  if (!selection.empty) return tr
+
+  const line = tr.newDoc.lineAt(selection.head)
+  const offset = selection.head - line.from
+  if (line.text.slice(0, offset) !== "```" || line.text.slice(offset) !== "") {
+    return tr
+  }
+
+  let openedOnThisLine = false
+  let openingOldPos = null
+  tr.changes.iterChanges((fromA, toA, fromB, toB, inserted) => {
+    if (openedOnThisLine || fromB > selection.head || toB < selection.head) return
+    const oldLine = tr.startState.doc.lineAt(fromA)
+    const oldPrefix = oldLine.text.slice(0, fromA - oldLine.from)
+    const oldSuffix = oldLine.text.slice(toA - oldLine.from)
+    const insertedText = inserted.toString()
+    const completesFence = (oldPrefix === "" && insertedText === "```")
+      || (oldPrefix === "``" && insertedText === "`")
+    openedOnThisLine = oldSuffix === ""
+      && completesFence
+      && fromB <= line.from + 2
+      && toB >= line.from + 3
+    if (openedOnThisLine) openingOldPos = fromA
+  })
+  if (!openedOnThisLine) return tr
+
+  const oldLine = tr.startState.doc.lineAt(openingOldPos)
+  const existingFenceStart = fenceStartAt(tr.startState, openingOldPos)
+  if (existingFenceStart != null && existingFenceStart < oldLine.from) return tr
+
+  return [
+    tr,
+    {
+      changes: { from: selection.head, insert: "\n\n```" },
+      selection: { anchor: selection.head + 1 },
+      annotations: autoClosedFence.of(true),
+      sequential: true,
+    },
+  ]
+})
+
 // Markdown assigns semantic meaning to four leading spaces: headings,
 // paragraphs, tables, fences, and other top-level blocks become code blocks.
 // List items are different: keep each Tab as authored, including repeated
@@ -1587,6 +2246,18 @@ function indentMarkdownListItems(view) {
       && selection.to === lastLine.from
       && lastLine.number > firstLine.number) {
     lastLine = view.state.doc.line(lastLine.number - 1)
+  }
+
+  if (selection.empty) {
+    const fence = fencedCodeAt(view.state, selection.head)
+    if (fence) {
+      const openingLine = view.state.doc.lineAt(fence.from)
+      const closingLine = view.state.doc.lineAt(fence.to)
+      if (firstLine.number > openingLine.number
+          && (!fence.closed || firstLine.number < closingLine.number)) {
+        return insertTab(view)
+      }
+    }
   }
 
   const firstMatch = firstLine.text.match(markdownListMarker)
@@ -1617,6 +2288,7 @@ function indentMarkdownListItems(view) {
 window.MDEditor = {
   create(parent, doc, callbacks) {
     const onDirty = callbacks && callbacks.onDirty
+    const onPasteImage = callbacks && callbacks.onPasteImage
     // Live preview spacing tokens from the host stylesheet (MarkdownHTML
     // constants) — see METRICS for the headless defaults.
     Object.assign(METRICS, (callbacks && callbacks.spacing) || {})
@@ -1626,9 +2298,13 @@ window.MDEditor = {
         doc,
         extensions: [
           history(),
-          // CodeMirror virtualizes long documents. Its selection layer keeps
-          // a full-document Cmd-A range visible as the viewport moves.
-          drawSelection(),
+          documentFind,
+          findTheme,
+          // Native selection, not drawSelection(): the selection layer paints
+          // every selected line edge to edge, while WebKit's own selection
+          // follows the text once the host styles .cm-content as a flex
+          // column (see EditorViewController). CodeMirror re-syncs the DOM
+          // selection to the rendered viewport as the document virtualizes.
           dropCursor(),
           EditorView.lineWrapping,
           EditorView.perLineTextDirection.of(true),
@@ -1636,13 +2312,21 @@ window.MDEditor = {
           directionLines,
           // Parse a leading `---` block as YAML frontmatter so its lines
           // never surface as a thematic break plus setext heading.
-          yamlFrontmatter({ content: markdown({ base: markdownLanguage, codeLanguages }) }),
+          yamlFrontmatter({
+            content: markdown({
+              base: markdownLanguage,
+              codeLanguages,
+              extensions: obsidianHighlight,
+            }),
+          }),
           activeCodeBlock,
           mermaidPreviews,
           tableEditors,
           syntaxHighlighting(codeHighlight),
           livePreview,
           alignInactiveHeadings,
+          autoCloseFence,
+          closeBrackets(),
           // paragraphReflow deliberately omitted: the preview renders
           // single newlines as hard breaks, so the
           // editor keeps them visible instead of joining lines.
@@ -1650,22 +2334,48 @@ window.MDEditor = {
             { key: "Mod-b", run: toggleInlineMark("**") },
             { key: "Mod-i", run: toggleInlineMark("*") },
             { key: "Tab", run: indentMarkdownListItems, shift: indentLess },
+            ...closeBracketsKeymap,
             ...markdownKeymap,
             ...defaultKeymap,
             ...historyKeymap,
           ]),
           // Fires on every change; the host debounces for autosave.
           EditorView.updateListener.of((update) => {
-            if (update.docChanged && onDirty) onDirty()
+            if (update.docChanged && callbacks?.onSearchChange) {
+              const search = update.state.field(documentFind)
+              callbacks.onSearchChange({ index: search.index + 1, total: search.matches.length })
+            }
+            if (update.docChanged && onDirty
+                && !update.transactions.some((transaction) => transaction.isUserEvent("rename"))) {
+              onDirty()
+            }
+          }),
+          EditorView.domEventHandlers({
+            paste(event, view) {
+              if (event.target instanceof Element
+                  && event.target.closest(".cm-md-table-cell")) return false
+              const items = Array.from(event.clipboardData?.items || [])
+              if (!items.some((item) => String(item.type || "").toLowerCase().startsWith("image/"))) return false
+              if (typeof onPasteImage !== "function") return false
+              event.preventDefault()
+              const selection = view.state.selection.main
+              onPasteImage(selection.from, selection.to)
+              return true
+            },
           }),
         ],
       }),
     })
+    // On macOS 26+ WebKit scrolls the page and owns the chrome backdrop.
+    // Other hosts retain CodeMirror's internal scroll container.
+    const pageScrolling = !!(callbacks && callbacks.pageScrolling)
+    const scroller = pageScrolling ? document.scrollingElement : view.scrollDOM
+    const scrollEvents = pageScrolling ? window : scroller
     let preservedSourcePosition = null
     let preservedSourceGap = 0
     let didUserScroll = false
     let userScrollIntent = false
-    let lastScrollTop = view.scrollDOM.scrollTop
+    let lastScrollTop = scroller.scrollTop
     const markScrollIntent = () => { userScrollIntent = true }
     const markKeyboardScrollIntent = (event) => {
       if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(event.key)) {
@@ -1673,16 +2383,16 @@ window.MDEditor = {
       }
     }
     const observeScroll = () => {
-      const scrollTop = view.scrollDOM.scrollTop
+      const scrollTop = scroller.scrollTop
       if (userScrollIntent && Math.abs(scrollTop - lastScrollTop) > 0.5) {
         didUserScroll = true
       }
       lastScrollTop = scrollTop
     }
-    view.scrollDOM.addEventListener("wheel", markScrollIntent, { passive: true })
-    view.scrollDOM.addEventListener("pointerdown", markScrollIntent, { passive: true })
-    view.scrollDOM.addEventListener("keydown", markKeyboardScrollIntent)
-    view.scrollDOM.addEventListener("scroll", observeScroll, { passive: true })
+    scrollEvents.addEventListener("wheel", markScrollIntent, { passive: true })
+    scrollEvents.addEventListener("pointerdown", markScrollIntent, { passive: true })
+    scrollEvents.addEventListener("keydown", markKeyboardScrollIntent)
+    scrollEvents.addEventListener("scroll", observeScroll, { passive: true })
     const lineContentBlock = (position) => {
       const block = view.lineBlockAt(position)
       let paddingTop = 0
@@ -1709,6 +2419,7 @@ window.MDEditor = {
       bold: toggleInlineMark("**"),
       italic: toggleInlineMark("*"),
       strikethrough: toggleInlineMark("~~"),
+      highlight: toggleInlineMark("=="),
       code: toggleInlineMark("`"),
       h0: setHeading(0),
       h1: setHeading(1),
@@ -1722,12 +2433,62 @@ window.MDEditor = {
     }
     return {
       getMarkdown: () => view.state.doc.toString(),
+      find: (query, backwards = false, beginsWith = false) => {
+        const previous = view.state.field(documentFind)
+        const same = previous.query === query && previous.beginsWith === beginsWith
+        let index = 0
+        if (same && previous.matches.length) {
+          index = (previous.index + (backwards ? -1 : 1) + previous.matches.length) % previous.matches.length
+        } else if (backwards) {
+          index = Number.MAX_SAFE_INTEGER
+        }
+        view.dispatch({ effects: setFind.of({ query, beginsWith, index }) })
+        const search = view.state.field(documentFind)
+        const match = search.matches[search.index]
+        if (match) {
+          preservedSourcePosition = null
+          didUserScroll = true
+          view.dispatch({ effects: EditorView.scrollIntoView(match.from, { y: "center" }) })
+        }
+        return { index: search.index + 1, total: search.matches.length }
+      },
+      isSyntaxReady: () => syntaxTreeAvailable(view.state, view.state.doc.length),
+      replaceMarkdown: (markdown) => {
+        const text = String(markdown || "")
+        const length = text.length
+        const selection = view.state.selection.main
+        const anchor = Math.min(selection.anchor, length)
+        const head = Math.min(selection.head, length)
+        const scrollTop = scroller.scrollTop
+        view.dispatch({
+          changes: { from: 0, to: view.state.doc.length, insert: text },
+          selection: { anchor, head },
+          userEvent: "rename",
+          annotations: Transaction.addToHistory.of(false),
+        })
+        requestAnimationFrame(() => {
+          scroller.scrollTop = scrollTop
+          view.requestMeasure()
+        })
+      },
+      insertTextAt: (text, from, to) => {
+        const length = view.state.doc.length
+        const start = Math.max(0, Math.min(Number(from) || 0, length))
+        const end = Math.max(start, Math.min(Number(to) || start, length))
+        view.dispatch({
+          changes: { from: start, to: end, insert: String(text || "") },
+          selection: { anchor: start + String(text || "").length },
+          userEvent: "input",
+          scrollIntoView: true,
+        })
+        view.focus()
+      },
       focus: () => view.focus(),
       getScrollAnchor: () => {
         if (!didUserScroll && Number.isFinite(preservedSourcePosition)) {
           return { position: preservedSourcePosition, gap: preservedSourceGap || 0 }
         }
-        const viewportY = view.scrollDOM.scrollTop
+        const viewportY = scroller.scrollTop
         const visibleLine = view.lineBlockAtHeight(viewportY)
         const line = view.state.doc.lineAt(visibleLine.from)
         const sourceLineBlock = lineContentBlock(line.from)
@@ -1742,7 +2503,6 @@ window.MDEditor = {
         return { position: line.number + progress, gap }
       },
       setScrollPosition: (progress, sourcePosition, sourceGap) => new Promise((resolve) => {
-        const scroller = view.scrollDOM
         const maximum = Math.max(scroller.scrollHeight - scroller.clientHeight, 0)
         let target = maximum * Math.min(Math.max(Number(progress) || 0, 0), 1)
         let linePosition = null
@@ -1774,7 +2534,7 @@ window.MDEditor = {
             target = measuredMaximum * Math.min(Math.max(Number(progress) || 0, 0), 1)
           }
           scroller.scrollTop = Math.min(Math.max(target, 0), measuredMaximum)
-          scroller.dispatchEvent(new Event("scroll"))
+          scrollEvents.dispatchEvent(new Event("scroll"))
           view.requestMeasure()
           requestAnimationFrame(() => {
             preservedSourcePosition = Number.isFinite(sourcePosition) ? sourcePosition : null
@@ -1794,6 +2554,9 @@ window.MDEditor = {
       }),
       insert: (text) => {
         const range = view.state.selection.main
+        const handled = view.state.facet(EditorView.inputHandler)
+          .some((handler) => handler(view, range.from, range.to, text))
+        if (handled) return
         view.dispatch({
           changes: { from: range.from, to: range.to, insert: text },
           selection: { anchor: range.from + text.length },
@@ -1812,10 +2575,10 @@ window.MDEditor = {
         return true
       },
       destroy: () => {
-        view.scrollDOM.removeEventListener("wheel", markScrollIntent)
-        view.scrollDOM.removeEventListener("pointerdown", markScrollIntent)
-        view.scrollDOM.removeEventListener("keydown", markKeyboardScrollIntent)
-        view.scrollDOM.removeEventListener("scroll", observeScroll)
+        scrollEvents.removeEventListener("wheel", markScrollIntent)
+        scrollEvents.removeEventListener("pointerdown", markScrollIntent)
+        scrollEvents.removeEventListener("keydown", markKeyboardScrollIntent)
+        scrollEvents.removeEventListener("scroll", observeScroll)
         view.destroy()
       },
     }
