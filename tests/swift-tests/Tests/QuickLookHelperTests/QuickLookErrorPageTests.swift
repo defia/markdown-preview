@@ -1,4 +1,6 @@
 import XCTest
+import WebKit
+@testable import MarkdownHelpers
 @testable import QuickLookHelpers
 
 final class QuickLookErrorPageTests: XCTestCase {
@@ -6,19 +8,48 @@ final class QuickLookErrorPageTests: XCTestCase {
     // MARK: - Markdown escaping
 
     func testEscapingNeutralizesMarkdownAndHTMLSyntax() {
-        let hostile = "*_`<script>alert(\"&\")</script> [link](x) #{}end"
-        let escaped = QuickLookErrorPage.escaped(hostile)
         XCTAssertEqual(
-            escaped,
-            "\\*\\_\\`\\<script\\>alert\\(\\\"\\&\\\"\\)\\<\\/script\\> \\[link\\]\\(x\\) \\#\\{\\}end"
+            QuickLookErrorPage.escaped("(draft) [draft] $x$ <&>"),
+            "&#40;draft&#41; &#91;draft&#93; &#36;x&#36; &#60;&#38;&#62;"
         )
-        // …so no raw HTML or emphasis markup survives.
-        XCTAssertFalse(escaped.contains("<script>"))
-        XCTAssertFalse(escaped.contains("[link]"))
     }
 
     func testEscapingLeavesPlainWordsAlone() {
         XCTAssertEqual(QuickLookErrorPage.escaped("notes 2026 v1 final"), "notes 2026 v1 final")
+    }
+
+    @MainActor
+    func testErrorDetailsRemainLiteralThroughRenderingPipeline() async throws {
+        let details = [
+            "notes (draft).md", "notes [draft].md",
+            #"notes \(draft\) \[draft\] $x$ $$y$$.md"#,
+            #"*_`<script>alert("&")</script> [link](x) &#40; 中文"#,
+        ]
+        for detail in details {
+            let url = URL(fileURLWithPath: "/tmp/" + detail.replacingOccurrences(of: "/", with: "_"))
+            let error = NSError(domain: detail, code: 42,
+                                userInfo: [NSLocalizedDescriptionKey: detail])
+            let html = MarkdownHTML.makeHTML(
+                from: QuickLookErrorPage.makeMarkdown(for: error, fileURL: url),
+                vendorLoading: .inline
+            )
+            let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 640, height: 480))
+            webView.loadHTMLString(html, baseURL: nil)
+            let deadline = Date().addingTimeInterval(10)
+            while webView.isLoading && Date() < deadline {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            XCTAssertFalse(webView.isLoading)
+            let name = try await webView.evaluateJavaScript(
+                "document.querySelector('article p strong').textContent") as? String
+            let rows = try await webView.evaluateJavaScript(
+                "Array.from(document.querySelectorAll('article li')).map(e => e.textContent.trimEnd())") as? [String]
+            XCTAssertEqual(name, url.lastPathComponent)
+            XCTAssertEqual(rows, ["Error: " + detail, "Domain: " + detail + " (42)", "Path: " + url.path])
+            let activeMarkup = try await webView.evaluateJavaScript(
+                "document.querySelectorAll('article .math, article .katex, article script, article a, article em, article code').length") as? Int
+            XCTAssertEqual(activeMarkup, 0)
+        }
     }
 
     // MARK: - Page content
@@ -28,7 +59,7 @@ final class QuickLookErrorPageTests: XCTestCase {
     func testPageIncludesFileNameErrorAndDomain() {
         let url = URL(fileURLWithPath: "/Users/ada/Documents/notes *draft*.md")
         let markdown = QuickLookErrorPage.makeMarkdown(for: readError, fileURL: url)
-        XCTAssertTrue(markdown.contains("notes \\*draft\\*\\.md"))
+        XCTAssertTrue(markdown.contains("notes &#42;draft&#42;&#46;md"))
         XCTAssertTrue(markdown.contains(QuickLookErrorPage.escaped(readError.localizedDescription)))
         XCTAssertTrue(markdown.contains("NSCocoaErrorDomain"))
         XCTAssertTrue(markdown.contains("\(readError.errorCode)"))

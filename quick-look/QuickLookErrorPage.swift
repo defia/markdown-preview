@@ -73,23 +73,24 @@ enum QuickLookErrorPage {
         )
     }
 
-    /// Backslash-escapes every ASCII punctuation character so interpolated
-    /// values (file names, localized error descriptions) can never light up
-    /// markdown syntax or inline HTML once rendered.
+    /// Encode ASCII punctuation as numeric character references. These stay
+    /// literal through math/footnote preprocessing, then CommonMark decodes
+    /// them as text without interpreting them as Markdown or HTML syntax.
     static func escaped(_ text: String) -> String {
         var escaped = String()
         escaped.reserveCapacity(text.count)
         for scalar in text.unicodeScalars {
             if escapableCharacters.contains(scalar) {
-                escaped.append("\\")
+                escaped.append("&#\(scalar.value);")
+            } else {
+                escaped.append(Character(scalar))
             }
-            escaped.append(Character(scalar))
         }
         return escaped
     }
 
-    // CommonMark only honors backslash escapes for ASCII punctuation, so
-    // escaping that full set is both necessary and sufficient.
+    // Include backslashes, brackets, and dollar signs so detail text cannot
+    // introduce delimiters consumed before CommonMark parses the page.
     private static let escapableCharacters: Set<Unicode.Scalar> = Set(
         "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~".unicodeScalars
     )
