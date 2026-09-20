@@ -43,12 +43,25 @@ enum QuickLookErrorPage {
         return lines.joined(separator: "\n") + "\n"
     }
 
+    // The sandbox remaps NSHomeDirectory() to this extension's own container,
+    // so resolve the user's real home for the containers-prefix check (same
+    // approach as InspectorView).
+    private static let realHomePath: String = {
+        if let pw = getpwuid(getuid()), let dir = pw.pointee.pw_dir {
+            return String(cString: dir)
+        }
+        return NSHomeDirectory()
+    }()
+
     /// Advice tailored to where the file lives. Files inside another app's
     /// sandbox container (`~/Library/Containers/<bundle-id>/…`, e.g. WeChat
     /// downloads) are off-limits to Quick Look extensions on macOS — no app
     /// can change that, so the page says so instead of failing silently.
     private static func hint(for fileURL: URL) -> String {
-        if fileURL.path.contains("/Library/Containers/") {
+        // Match a prefix of the real user's containers root: a substring
+        // check would also catch lookalike paths like /tmp/Library/Containers.
+        let containersRoot = realHomePath + "/Library/Containers/"
+        if fileURL.standardizedFileURL.path.hasPrefix(containersRoot) {
             return NSLocalizedString(
                 "This file is inside another app's sandbox container, which macOS keeps off-limits to Quick Look. Double-click the file to open it in Markdown Preview, or copy it to a regular folder and preview the copy.",
                 comment: "Quick Look error page hint for files in an app container"
